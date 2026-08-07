@@ -67,11 +67,6 @@ section.band{border-top:1px solid var(--line);padding:110px 0}
 .bp-cell p{font-size:13.5px;color:var(--muted);line-height:1.6}
 .bp-cell svg{position:absolute;bottom:14px;right:16px;opacity:.35}
 /* LOGIN */
-.login-band{background:var(--ink);color:#fff}
-.login-band .sec-head h2{color:#fff}
-.login-band .sec-head .idx{color:#8a8a8a}
-.login-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:80px;align-items:center}
-.login-text p{color:#b5b5b5;font-size:15.5px;line-height:1.7;margin-bottom:18px}
 .login-card{background:#fff;color:var(--ink);padding:40px 36px;border-radius:0}
 .login-card h4{font-family:var(--font-display);font-weight:500;font-size:20px;margin-bottom:8px}
 .login-card .sub{color:var(--muted);font-size:13.5px;margin-bottom:26px}
@@ -90,7 +85,6 @@ footer .right{color:var(--muted);font-size:12.5px}
 .reveal.on{opacity:1;transform:none}
 @media(max-width:820px){
   .nav-links a{display:none}
-  .login-grid{grid-template-columns:1fr;gap:44px}
   .blueprint{grid-template-columns:1fr}
   .stack-row{grid-template-columns:1fr;gap:10px;padding:26px 22px}
   .stack-row .tag{justify-self:start}
@@ -106,7 +100,7 @@ footer .right{color:var(--muted);font-size:12.5px}
     <div class="nav-links">
       <a href="#product" data-i18n="nav_product">Product</a>
       <a href="#capabilities" data-i18n="nav_caps">Capabilities</a>
-      <a href="#login" data-i18n="nav_login">Access</a>
+      <a href="/login" data-i18n="nav_login">Access</a>
       <button class="lang-btn" id="langToggle">ES</button>
     </div>
   </div>
@@ -118,7 +112,7 @@ footer .right{color:var(--muted);font-size:12.5px}
   <h1><span data-i18n="hero_t1">Your agent works</span><br><span class="accent" data-i18n="hero_t2">while you don't.</span></h1>
   <p class="sub" data-i18n="hero_sub">Dorsha runs autonomous agents on your infrastructure — monitoring, reporting, automating and deciding 24/7. You supervise. It executes.</p>
   <div class="hero-cta">
-    <a class="btn btn-dark" href="#login" data-i18n="cta_login">Sign in</a>
+    <a class="btn btn-dark" href="/login" data-i18n="cta_login">Sign in</a>
     <a class="btn btn-ghost" href="#capabilities" data-i18n="cta_explore">Explore capabilities</a>
   </div>
   <div class="hero-meta">
@@ -157,34 +151,7 @@ footer .right{color:var(--muted);font-size:12.5px}
   </div>
 </section>
 
-<section class="band login-band" id="login">
-  <div class="container">
-    <div class="login-grid">
-      <div class="login-text reveal">
-        <div class="sec-head" style="margin-bottom:26px"><span class="idx">03 — ACCESS</span><h2 data-i18n="s3_title">Take command.</h2></div>
-        <p data-i18n="login_p1">The admin panel is where Dorsha answers to you: live dashboard, user control, action approvals and full conversation history.</p>
-        <p data-i18n="login_p2">Sign in with your email. Only authorized accounts get in — everyone else is blocked at the door.</p>
-      </div>
-      <div class="login-card reveal">
-        <h4 data-i18n="card_t">Sign in to the panel</h4>
-        <p class="sub" data-i18n="card_sub">Sign in with your email — we'll send you a code</p>
-        <div id="emailStep">
-          <input type="email" id="emailInput" placeholder="you@email.com" autocomplete="email">
-          <button class="btn btn-dark" id="sendCodeBtn" style="width:100%;justify-content:center" data-i18n="send_code">Send code</button>
-        </div>
-        <div id="codeStep" style="display:none">
-          <input type="text" id="codeInput" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
-          <button class="btn btn-dark" id="loginBtn" style="width:100%;justify-content:center" data-i18n="login_btn">Sign in</button>
-          <a href="#" id="backBtn" style="display:block;text-align:center;font-size:12.5px;color:var(--muted);margin-top:12px" data-i18n="back_btn">← Back</a>
-        </div>
-        <p id="authMsg" class="panel-note" style="min-height:16px"></p>
-        <div class="divider" data-i18n="or2">or</div>
-        <a class="panel-link" href="/api/panel" data-i18n="panel_link">Open admin panel directly →</a>
-        <p class="panel-note"><span id="allowedEmail">…</span><span data-i18n="panel_note"> · restricted access</span></p>
-      </div>
-    </div>
-  </div>
-</section>
+
 
 <footer>
   <div class="container foot-inner">
@@ -266,10 +233,6 @@ function applyLang(){
     if(d[k]) el.textContent = d[k];
   });
   document.getElementById('langToggle').textContent = LANG === 'en' ? 'ES' : 'EN';
-  ['emailInput','codeInput'].forEach(function(id){
-    var el = document.getElementById(id);
-    if(el) el.placeholder = d[id === 'emailInput' ? 'email_ph' : 'code_ph'];
-  });
 }
 document.getElementById('langToggle').addEventListener('click', function(){
   LANG = LANG === 'en' ? 'es' : 'en';
@@ -277,10 +240,6 @@ document.getElementById('langToggle').addEventListener('click', function(){
   applyLang();
 });
 applyLang();
-// Email autorizado dinámico (no quemado)
-fetch('/api/config').then(function(r){ return r.json(); }).then(function(d){
-  if(d.email){ document.getElementById('allowedEmail').textContent = d.email; }
-}).catch(function(){ document.getElementById('allowedEmail').style.display = 'none'; });
 // Reveal on scroll
 var io = new IntersectionObserver(function(es){
   es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('on'); io.unobserve(e.target); } });
@@ -288,76 +247,6 @@ var io = new IntersectionObserver(function(es){
 document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
 </script>
 
-<script type="module">
-import { Privy, LocalStorage } from '/static/privy-sdk.js';
 
-var APP_ID = 'cmsi9drpc030y0dl7ab6am5c1';
-var privy = new Privy({ appId: APP_ID, storage: new LocalStorage() });
-var $ = function(id){ return document.getElementById(id); };
-var authedEmail = null;
-
-function setMsg(t, ok){
-  var m = $('authMsg');
-  m.textContent = t;
-  m.style.color = ok ? '#3b82f6' : '#ef4444';
-}
-
-function switchToCode(){
-  $('emailStep').style.display = 'none';
-  $('codeStep').style.display = 'block';
-  $('codeInput').focus();
-}
-
-async function finishLogin(){
-  var jwt = await privy.getAccessToken();
-  if(!jwt){ setMsg('No se pudo obtener sesión', false); return; }
-  setMsg('Verificando acceso…', true);
-  try{
-    var r = await fetch('/api/ticket?token=' + encodeURIComponent(jwt));
-    var d = await r.json();
-    if(!r.ok){
-      if(d.error === 'not authorized'){ setMsg('Acceso restringido: email no autorizado', false); }
-      else{ setMsg('Error: ' + (d.error || 'desconocido'), false); }
-      return;
-    }
-    setMsg('Acceso verificado — redirigiendo al panel…', true);
-    location.href = d.panel + '/auth/ticket?t=' + d.ticket + '&e=' + d.exp + '&m=' + encodeURIComponent(d.email);
-  }catch(e){ setMsg('Error de red: ' + e.message, false); }
-}
-
-$('sendCodeBtn').addEventListener('click', async function(){
-  var email = $('emailInput').value.trim();
-  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ setMsg('Email inválido', false); return; }
-  try{
-    await privy.auth.email.sendCode(email);
-    setMsg('Código enviado a ' + email, true);
-    switchToCode();
-  }catch(e){ setMsg('Error: ' + e.message, false); }
-});
-
-$('loginBtn').addEventListener('click', async function(){
-  var email = $('emailInput').value.trim();
-  var otp = $('codeInput').value.trim();
-  if(!otp){ setMsg('Ingresa el código', false); return; }
-  try{
-    await privy.auth.email.loginWithCode(email, otp);
-    await finishLogin();
-  }catch(e){ setMsg('Código inválido o expirado', false); }
-});
-
-$('backBtn').addEventListener('click', function(ev){
-  ev.preventDefault();
-  $('codeStep').style.display = 'none';
-  $('emailStep').style.display = 'block';
-  setMsg('', true);
-});
-
-$('codeInput').addEventListener('keydown', function(ev){
-  if(ev.key === 'Enter') $('loginBtn').click();
-});
-$('emailInput').addEventListener('keydown', function(ev){
-  if(ev.key === 'Enter') $('sendCodeBtn').click();
-});
-</script>
 </body>
 </html>

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in · Dorsha</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#ffffff; --ink:#0a0a0a; --muted:#5a5a5a; --line:#e4e4e4;
+  --ok:#15803d; --danger:#dc2626;
+  --font-display:'Space Grotesk',sans-serif; --font-body:'Inter',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-body);font-weight:400;min-height:100svh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
+.grid-bg{position:fixed;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:56px 56px;opacity:.45;-webkit-mask-image:radial-gradient(ellipse 80% 70% at 50% 35%,#000 25%,transparent 78%);mask-image:radial-gradient(ellipse 80% 70% at 50% 35%,#000 25%,transparent 78%);pointer-events:none;z-index:0}
+/* TOP */
+.top{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;padding:22px 30px}
+.brand{font-family:var(--font-display);font-weight:600;font-size:18px;letter-spacing:-.02em;text-decoration:none;color:var(--ink)}
+.lang-btn{font-family:var(--font-display);font-size:12.5px;font-weight:500;border:1px solid var(--line);background:#fff;color:var(--ink);padding:7px 12px;cursor:pointer;border-radius:0;letter-spacing:.03em}
+.lang-btn:hover{border-color:var(--ink)}
+/* CARD */
+.main{position:relative;z-index:1;flex:1;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{width:100%;max-width:430px;border:1px solid var(--line);background:#fff;padding:44px 42px}
+.bar{height:3px;background:var(--ink);width:56px;margin-bottom:26px}
+.idx{font-family:var(--font-display);font-size:11.5px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin-bottom:10px}
+.card h1{font-family:var(--font-display);font-weight:500;font-size:24px;letter-spacing:-.02em;margin-bottom:8px}
+.card .sub{color:var(--muted);font-size:14px;line-height:1.6;margin-bottom:30px}
+.step-label{font-family:var(--font-display);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+input[type=email],input[type=text]{width:100%;padding:13px 14px;border:1px solid var(--line);border-radius:0;background:#fff;color:var(--ink);font-family:var(--font-body);font-size:15px;box-sizing:border-box;margin-bottom:14px}
+input:focus{outline:none;border-color:var(--ink)}
+.btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:14px 20px;border:1px solid var(--ink);border-radius:0;background:var(--ink);color:#fff;font-family:var(--font-display);font-size:14.5px;font-weight:500;letter-spacing:.02em;cursor:pointer;transition:background .15s;text-decoration:none}
+.btn:hover{background:#262626}
+.btn:disabled{opacity:.5;cursor:wait}
+.back-link{display:block;text-align:center;font-family:var(--font-body);font-size:12.5px;color:var(--muted);text-decoration:none;margin-top:14px}
+.back-link:hover{color:var(--ink)}
+#authMsg{min-height:18px;margin-top:16px;font-size:13px;line-height:1.5}
+#authMsg.ok{color:var(--ok)}
+#authMsg.err{color:var(--danger)}
+.divider{display:flex;align-items:center;gap:14px;margin:26px 0;color:var(--muted);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.panel-link{display:flex;align-items:center;justify-content:center;gap:8px;font-family:var(--font-display);font-size:13.5px;font-weight:500;color:var(--ink);text-decoration:none;border:1px solid var(--line);padding:13px;transition:border-color .15s}
+.panel-link:hover{border-color:var(--ink)}
+.panel-link .arrow{transition:transform .15s}
+.panel-link:hover .arrow{transform:translateX(4px)}
+.note{text-align:center;margin-top:18px;font-size:12px;color:var(--muted)}
+.note #allowedEmail{font-family:var(--font-display);font-size:12px}
+/* FOOTER */
+footer{position:relative;z-index:1;padding:20px 30px;text-align:center;color:var(--muted);font-size:12px}
+footer a{color:var(--muted);text-decoration:none}
+footer a:hover{color:var(--ink)}
+@media(max-width:520px){
+  .card{padding:34px 26px}
+  .top{padding:16px 20px}
+}
+</style>
+</head>
+<body>
+<div class="grid-bg"></div>
+
+<div class="top">
+  <a class="brand" href="/">DORSHA</a>
+  <button class="lang-btn" id="langToggle">ES</button>
+</div>
+
+<main class="main">
+  <div class="card">
+    <div class="bar"></div>
+    <div class="idx" data-i18n="idx">01 — ACCESS</div>
+    <h1 data-i18n="title">Sign in to the panel</h1>
+    <p class="sub" data-i18n="sub">Enter your email and we'll send you a one-time code. Only authorized accounts get in.</p>
+
+    <div id="emailStep">
+      <div class="step-label" data-i18n="step1">Step 1 — Email</div>
+      <input type="email" id="emailInput" placeholder="you@email.com" autocomplete="email" spellcheck="false">
+      <button class="btn" id="sendCodeBtn" data-i18n="send_btn">Send code</button>
+    </div>
+
+    <div id="codeStep" style="display:none">
+      <div class="step-label" data-i18n="step2">Step 2 — Code</div>
+      <input type="text" id="codeInput" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+      <button class="btn" id="loginBtn" data-i18n="login_btn">Sign in</button>
+      <a href="#" class="back-link" id="backBtn" data-i18n="back_btn">← Back</a>
+    </div>
+
+    <p id="authMsg"></p>
+
+    <div class="divider" data-i18n="or">or</div>
+    <a class="panel-link" href="/api/panel">
+      <span data-i18n="panel_link">Open admin panel directly</span>
+      <span class="arrow">→</span>
+    </a>
+    <p class="note"><span id="allowedEmail">…</span><span data-i18n="note"> · restricted access</span></p>
+  </div>
+</main>
+
+<footer><a href="/" data-i18n="foot">← Back to dorsha.devcristobalvc.com</a></footer>
+
+<script>
+var I18N = {
+  en: { idx:"01 — ACCESS", title:"Sign in to the panel", sub:"Enter your email and we'll send you a one-time code. Only authorized accounts get in.", step1:"Step 1 — Email", step2:"Step 2 — Code", send_btn:"Send code", login_btn:"Sign in", back_btn:"← Back", or:"or", panel_link:"Open admin panel directly", note:"· restricted access", email_ph:"you@email.com", code_ph:"000000", foot:"← Back to dorsha.devcristobalvc.com", verifying:"Verifying access…", redirecting:"Access verified — redirecting…", denied:"Access denied: email not authorized", invalid_code:"Invalid or expired code", invalid_email:"Invalid email", enter_code:"Enter the code" },
+  es: { idx:"01 — ACCESO", title:"Inicia sesión en el panel", sub:"Ingresa tu email y te enviamos un código de un solo uso. Solo entran cuentas autorizadas.", step1:"Paso 1 — Email", step2:"Paso 2 — Código", send_btn:"Enviar código", login_btn:"Iniciar sesión", back_btn:"← Volver", or:"o", panel_link:"Abrir panel de admin directamente", note:"· acceso restringido", email_ph:"tu@email.com", code_ph:"000000", foot:"← Volver a dorsha.devcristobalvc.com", verifying:"Verificando acceso…", redirecting:"Acceso verificado — redirigiendo…", denied:"Acceso denegado: email no autorizado", invalid_code:"Código inválido o expirado", invalid_email:"Email inválido", enter_code:"Ingresa el código" }
+};
+var LANG = localStorage.getItem('dorsha_lang') || 'en';
+function applyLang(){
+  var d = I18N[LANG] || I18N.en;
+  document.documentElement.setAttribute('lang', LANG);
+  document.querySelectorAll('[data-i18n]').forEach(function(el){
+    var k = el.getAttribute('data-i18n');
+    if(d[k]) el.textContent = d[k];
+  });
+  document.getElementById('langToggle').textContent = LANG === 'en' ? 'ES' : 'EN';
+  document.getElementById('emailInput').placeholder = d.email_ph;
+  document.getElementById('codeInput').placeholder = d.code_ph;
+}
+document.getElementById('langToggle').addEventListener('click', function(){
+  LANG = LANG === 'en' ? 'es' : 'en';
+  localStorage.setItem('dorsha_lang', LANG);
+  applyLang();
+});
+applyLang();
+
+fetch('/api/config').then(function(r){ return r.json(); }).then(function(d){
+  if(d.email){ document.getElementById('allowedEmail').textContent = d.email; }
+}).catch(function(){ document.getElementById('allowedEmail').style.display = 'none'; });
+</script>
+
+<script type="module">
+import { Privy, LocalStorage } from '/static/privy-sdk.js';
+
+var APP_ID = 'cmsi9drpc030y0dl7ab6am5c1';
+var privy = new Privy({ appId: APP_ID, storage: new LocalStorage() });
+var $ = function(id){ return document.getElementById(id); };
+
+function setMsg(t, ok){
+  var m = $('authMsg');
+  m.textContent = t;
+  m.className = ok ? 'ok' : 'err';
+}
+function setBusy(btn, busy){
+  btn.disabled = busy;
+  btn.textContent = busy ? '…' : (btn === $('sendCodeBtn') ? I18N[LANG].send_btn : I18N[LANG].login_btn);
+}
+
+function switchToCode(){
+  $('emailStep').style.display = 'none';
+  $('codeStep').style.display = 'block';
+  $('codeInput').focus();
+}
+
+async function finishLogin(){
+  var jwt = await privy.getAccessToken();
+  if(!jwt){ setMsg('No session available', false); return; }
+  setMsg(I18N[LANG].verifying || 'Verifying access…', true);
+  try{
+    var r = await fetch('/api/ticket?token=' + encodeURIComponent(jwt));
+    var d = await r.json();
+    if(!r.ok){
+      setMsg(d.error === 'not authorized' ? (I18N[LANG].denied || 'Access denied: email not authorized') : 'Error: ' + (d.error || 'unknown'), false);
+      return;
+    }
+    setMsg(I18N[LANG].redirecting || 'Access verified — redirecting…', true);
+    location.href = d.panel + '/auth/ticket?t=' + d.ticket + '&e=' + d.exp + '&m=' + encodeURIComponent(d.email);
+  }catch(e){ setMsg('Network error: ' + e.message, false); }
+}
+
+$('sendCodeBtn').addEventListener('click', async function(){
+  var email = $('emailInput').value.trim();
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ setMsg(I18N[LANG].invalid_email, false); return; }
+  setBusy($('sendCodeBtn'), true);
+  try{
+    await privy.auth.email.sendCode(email);
+    setMsg('', true);
+    switchToCode();
+  }catch(e){ setMsg('Error: ' + e.message, false); }
+  finally { setBusy($('sendCodeBtn'), false); }
+});
+
+$('loginBtn').addEventListener('click', async function(){
+  var email = $('emailInput').value.trim();
+  var otp = $('codeInput').value.trim();
+  if(!otp){ setMsg(I18N[LANG].enter_code, false); return; }
+  setBusy($('loginBtn'), true);
+  try{
+    await privy.auth.email.loginWithCode(email, otp);
+    await finishLogin();
+  }catch(e){ setMsg(I18N[LANG].invalid_code, false); }
+  finally { setBusy($('loginBtn'), false); }
+});
+
+$('backBtn').addEventListener('click', function(ev){
+  ev.preventDefault();
+  $('codeStep').style.display = 'none';
+  $('emailStep').style.display = 'block';
+  setMsg('', true);
+});
+
+$('codeInput').addEventListener('keydown', function(ev){ if(ev.key === 'Enter') $('loginBtn').click(); });
+$('emailInput').addEventListener('keydown', function(ev){ if(ev.key === 'Enter') $('sendCodeBtn').click(); });
+</script>
+</body>
+</html>
