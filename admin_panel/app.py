@@ -130,6 +130,7 @@ def login():
         <input type='password' name='password' placeholder='Contraseña' required autofocus>
         <button type='submit'>Entrar</button>
       </form>
+      <p class='muted' style='margin-top:18px;font-size:12px'><a href='https://dorsha.devcristobalvc.com/login'>← Entrar con email y código (Dorsha)</a></p>
     </div>"""
 
 @app.route("/logout")

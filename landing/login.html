@@ -86,7 +86,6 @@ footer a:hover{color:var(--ink)}
 
     <p id="authMsg"></p>
 
-    <a class="panel-link" href="/api/panel" data-i18n="panel_link">Open admin panel directly →</a>
     <p class="note" data-i18n="note">Restricted access</p>
   </div>
 </main>
@@ -95,8 +94,8 @@ footer a:hover{color:var(--ink)}
 
 <script>
 var I18N = {
-  en: { idx:"RESTRICTED ACCESS", title:"Sign in", sub:"Enter your email and we'll send you a one-time code.", step1:"Step 1 — Email", step2:"Step 2 — Code", send_btn:"Send code", login_btn:"Sign in", back_btn:"← Back", resend_btn:"Didn't get it? Resend code", panel_link:"Open admin panel directly →", note:"Restricted access", email_ph:"you@email.com", code_ph:"000000", foot:"← Back to dorsha.devcristobalvc.com", verifying:"Verifying access…", redirecting:"Access verified — redirecting…", denied:"Access denied: email not authorized", invalid_code:"Invalid or expired code", invalid_email:"Invalid email", enter_code:"Enter the code", code_sent:"Code sent to {email}. Check your inbox." },
-  es: { idx:"ACCESO RESTRINGIDO", title:"Inicia sesión", sub:"Ingresa tu email y te enviamos un código de un solo uso.", step1:"Paso 1 — Email", step2:"Paso 2 — Código", send_btn:"Enviar código", login_btn:"Iniciar sesión", back_btn:"← Volver", resend_btn:"¿No te llegó? Reenviar código", panel_link:"Abrir panel de admin directamente →", note:"Acceso restringido", email_ph:"tu@email.com", code_ph:"000000", foot:"← Volver a dorsha.devcristobalvc.com", verifying:"Verificando acceso…", redirecting:"Acceso verificado — redirigiendo…", denied:"Acceso denegado: email no autorizado", invalid_code:"Código inválido o expirado", invalid_email:"Email inválido", enter_code:"Ingresa el código", code_sent:"Código enviado a {email}. Revisa tu bandeja." }
+  en: { idx:"RESTRICTED ACCESS", title:"Sign in", sub:"Enter your email and we'll send you a one-time code.", step1:"Step 1 — Email", step2:"Step 2 — Code", send_btn:"Send code", login_btn:"Sign in", back_btn:"← Back", resend_btn:"Didn't get it? Resend code", note:"Restricted access", email_ph:"you@email.com", code_ph:"000000", foot:"← Back to dorsha.devcristobalvc.com", verifying:"Verifying access…", redirecting:"Access verified — redirecting…", denied:"Access denied: email not authorized", invalid_code:"Invalid or expired code", invalid_email:"Invalid email", enter_code:"Enter the code", code_sent:"Code sent to {email}. Check your inbox." },
+  es: { idx:"ACCESO RESTRINGIDO", title:"Inicia sesión", sub:"Ingresa tu email y te enviamos un código de un solo uso.", step1:"Paso 1 — Email", step2:"Paso 2 — Código", send_btn:"Enviar código", login_btn:"Iniciar sesión", back_btn:"← Volver", resend_btn:"¿No te llegó? Reenviar código", note:"Acceso restringido", email_ph:"tu@email.com", code_ph:"000000", foot:"← Volver a dorsha.devcristobalvc.com", verifying:"Verificando acceso…", redirecting:"Acceso verificado — redirigiendo…", denied:"Acceso denegado: email no autorizado", invalid_code:"Código inválido o expirado", invalid_email:"Email inválido", enter_code:"Ingresa el código", code_sent:"Código enviado a {email}. Revisa tu bandeja." }
 };
 var LANG = localStorage.getItem('dorsha_lang') || (navigator.language && navigator.language.toLowerCase().indexOf('es') === 0 ? 'es' : 'en');
 function applyLang(){
