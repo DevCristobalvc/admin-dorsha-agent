@@ -8,7 +8,7 @@ import crypto from 'crypto';
 const privy = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);
 const TICKET_SECRET = process.env.PRIVY_TICKET_SECRET;
 const ALLOWED_EMAIL = process.env.PRIVY_ALLOWED_EMAIL;
-const GIST_RAW = 'https://gist.githubusercontent.com/DevCristobalvc/21a187027af69a8d8f4c5e19079e8d62/raw/panel_url.txt';
+const GIST_API = 'https://api.github.com/gists/21a187027af69a8d8f4c5e19079e8d62';
 
 export default async function handler(req, res) {
   try {
@@ -32,8 +32,9 @@ export default async function handler(req, res) {
 
     let panel = '';
     try {
-      const r = await fetch(GIST_RAW, { signal: AbortSignal.timeout(5000) });
-      const u = (await r.text()).trim();
+      const r = await fetch(GIST_API, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'dorsha-landing' } });
+      const d = await r.json();
+      const u = (d.files && d.files['panel_url.txt'] && d.files['panel_url.txt'].content || '').trim();
       if (u.startsWith('https://')) panel = u;
     } catch (_) {}
 

@@ -20,7 +20,10 @@ def _env_value(key, default=None):
     return default
 
 SUPER_ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID") or _env_value("ADMIN_CHAT_ID")
-URL_RE = re.compile(r"Forwarding HTTP traffic from (https://\S+)")
+URL_RE = re.compile(r"(https://[^\s\r\n]+)")
+
+def _is_tunnel_url(u):
+    return any(h in u for h in ("serveousercontent.com", "pinggy-free.link", "lhr.life", "loca.lt", "trycloudflare.com"))
 
 GIST_ID = "21a187027af69a8d8f4c5e19079e8d62"
 GIST_FILE = "panel_url.txt"
@@ -79,7 +82,7 @@ def save_url(u):
 
 def main():
     print("notify_url_change: watching", LOG_PATH, flush=True)
-    pos = 0
+    pos = os.path.getsize(LOG_PATH) if os.path.exists(LOG_PATH) else 0
     while True:
         try:
             if os.path.exists(LOG_PATH):
@@ -89,7 +92,7 @@ def main():
                     pos = f.tell()
                 for m in URL_RE.finditer(chunk):
                     url = m.group(1)
-                    if url != last_url():
+                    if url != last_url() and _is_tunnel_url(url):
                         save_url(url)
                         print("Nueva URL:", url, flush=True)
                         update_gist(url)

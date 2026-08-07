@@ -51,6 +51,12 @@ def require_login():
     if not cookie_ok():
         abort(redirect("/login"))
 
+@app.route("/")
+def index():
+    if cookie_ok():
+        return redirect("/dashboard")
+    return redirect("/login")
+
 # ---------- SETUP (solo si no hay contraseña) ----------
 @app.route("/setup", methods=["GET", "POST"])
 def setup():

@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflared quick tunnel for Gero/Dinco Admin Panel
+After=network-online.target admin-panel.service
+Requires=admin-panel.service
+
+[Service]
+Type=simple
+ExecStart=/home/datacci/.local/bin/cloudflared tunnel --no-autoupdate --url http://localhost:5057
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/datacci/.hermes/admin_panel/tunnel.log
+StandardError=append:/home/datacci/.hermes/admin_panel/tunnel.log
+
+[Install]
+WantedBy=default.target
