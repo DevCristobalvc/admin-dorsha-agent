@@ -1,0 +1,15 @@
+{
+  "name": "dorsha-landing",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@privy-io/js-sdk-core": "^0.69.0",
+    "@privy-io/server-auth": "^1.32.5"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2"
+  },
+  "scripts": {
+    "build:privy": "esbuild privy-entry.js --bundle --format=esm --outfile=static/privy-sdk.js"
+  }
+}

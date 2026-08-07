@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/panel.py": { "maxDuration": 10 },
+    "api/ticket.mjs": { "maxDuration": 10 }
+  }
+}
