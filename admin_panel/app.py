@@ -26,21 +26,41 @@ SUPER_ADMIN = os.environ.get("ADMIN_CHAT_ID") or _read_env("ADMIN_CHAT_ID")
 
 BASE_CSS = """
 <style>
-body{font-family:-apple-system,Arial,sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:24px}
-.card{max-width:520px;margin:40px auto;background:#181b21;border:1px solid #2a2f3a;border-radius:10px;padding:28px}
-h1{font-size:20px;margin:0 0 18px}
-input[type=password],input[type=text]{width:100%;padding:10px;margin:8px 0 16px;background:#0f1115;
-  border:1px solid #333;border-radius:6px;color:#fff;box-sizing:border-box}
-button{background:#3b82f6;color:#fff;border:none;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:14px}
-button.danger{background:#ef4444}
-button.ghost{background:#2a2f3a}
-.row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #23262e}
-.tag{font-size:11px;padding:2px 8px;border-radius:10px;background:#2a2f3a}
-.tag.blocked{background:#7f1d1d}
-.tag.active{background:#14532d}
-.wrap{max-width:720px;margin:30px auto}
-.muted{color:#9aa0aa;font-size:13px}
-a{color:#60a5fa}
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap');
+:root{--bg:#ffffff;--ink:#0a0a0a;--muted:#5a5a5a;--line:#e4e4e4;--danger:#dc2626;--ok:#15803d}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:'Inter',sans-serif;font-weight:400;min-height:100vh}
+h1,h2,h3,h4{font-family:'Space Grotesk',sans-serif;font-weight:500;letter-spacing:-.02em}
+.brand{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:18px;letter-spacing:-.02em}
+.idx{font-family:'Space Grotesk',sans-serif;font-size:11.5px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}
+.wrap{max-width:760px;margin:0 auto;padding:48px 24px}
+.top{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:36px}
+.top .brand a{color:var(--ink);text-decoration:none}
+.nav a{color:var(--muted);text-decoration:none;font-size:13.5px;margin-left:18px}
+.nav a:hover{color:var(--ink)}
+.card{border:1px solid var(--line);padding:28px;margin-bottom:32px}
+.card h2{font-size:17px;margin-bottom:6px}
+.card .idx{margin-bottom:18px;display:block}
+.row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:13px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:none}
+.row .who b{font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:14.5px}
+.muted{color:var(--muted);font-size:13px;line-height:1.55}
+input[type=password],input[type=text],select{width:100%;padding:11px 13px;margin:8px 0 16px;background:#fff;border:1px solid var(--line);border-radius:0;color:var(--ink);font-family:'Inter',sans-serif;font-size:14px;box-sizing:border-box}
+input:focus,select:focus{outline:none;border-color:var(--ink)}
+button{font-family:'Space Grotesk',sans-serif;font-size:13.5px;font-weight:500;letter-spacing:.02em;padding:10px 20px;border:1px solid var(--ink);border-radius:0;background:var(--ink);color:#fff;cursor:pointer;transition:background .15s}
+button:hover{background:#262626}
+button.ghost{background:#fff;color:var(--ink)}
+button.ghost:hover{background:#f5f5f5}
+button.danger{background:#fff;color:var(--danger);border-color:var(--danger)}
+button.danger:hover{background:var(--danger);color:#fff}
+.tag{font-family:'Space Grotesk',sans-serif;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;padding:4px 10px;border:1px solid var(--line);color:var(--muted);margin-right:10px;white-space:nowrap}
+.tag.active{border-color:var(--ok);color:var(--ok)}
+.tag.blocked{border-color:var(--danger);color:var(--danger)}
+a{color:var(--ink)}
+.msg{max-width:520px;margin:60px auto;padding:32px;border:1px solid var(--line)}
+.msg h1{font-size:20px;margin-bottom:12px}
+.bar{height:3px;background:var(--ink);width:56px;margin-bottom:26px}
+.btnrow{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
 </style>
 """
 
@@ -66,17 +86,19 @@ def setup():
         p1 = request.form.get("password", "")
         p2 = request.form.get("password2", "")
         if len(p1) < 6:
-            return BASE_CSS + "<div class='card'><h1>Error</h1><p>Contraseña muy corta (min 6).</p><a href='/setup'>Volver</a></div>"
+            return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · SETUP</div><h1>Error</h1><p class='muted'>Contraseña muy corta (min 6).</p><p style='margin-top:14px'><a href='/setup'>← Volver</a></p></div>"
         if p1 != p2:
-            return BASE_CSS + "<div class='card'><h1>Error</h1><p>No coinciden.</p><a href='/setup'>Volver</a></div>"
+            return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · SETUP</div><h1>Error</h1><p class='muted'>No coinciden.</p><p style='margin-top:14px'><a href='/setup'>← Volver</a></p></div>"
         db.set_password(p1)
         token = db.create_session()
         resp = make_response(redirect("/dashboard"))
         resp.set_cookie("session", token, httponly=True, samesite="Lax", max_age=3600*12)
         return resp
     return BASE_CSS + """
-    <div class='card'>
-      <h1>🔐 Crear contraseña de administrador</h1>
+    <div class='msg'>
+      <div class='bar'></div>
+      <div class='idx'>DORSHA · SETUP</div>
+      <h1>Crear contraseña de administrador</h1>
       <p class='muted'>Primera vez. Esta contraseña queda hasheada (PBKDF2-SHA256), nadie puede leerla despues.</p>
       <form method='post'>
         <input type='password' name='password' placeholder='Nueva contraseña' required>
@@ -97,10 +119,13 @@ def login():
             resp = make_response(redirect("/dashboard"))
             resp.set_cookie("session", token, httponly=True, samesite="Lax", max_age=3600*12)
             return resp
-        return BASE_CSS + "<div class='card'><h1>❌ Contraseña incorrecta</h1><a href='/login'>Reintentar</a></div>"
+        return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div><h1>❌ Contraseña incorrecta</h1><p style='margin-top:14px'><a href='/login'>← Reintentar</a></p></div>"
     return BASE_CSS + """
-    <div class='card'>
-      <h1>🔐 Panel de administración — Gero/Dinco</h1>
+    <div class='msg'>
+      <div class='bar'></div>
+      <div class='idx'>DORSHA · ADMIN</div>
+      <h1>Panel de administración</h1>
+      <p class='muted' style='margin-bottom:18px'>Gero / Dinco · acceso restringido</p>
       <form method='post'>
         <input type='password' name='password' placeholder='Contraseña' required autofocus>
         <button type='submit'>Entrar</button>
@@ -131,7 +156,7 @@ def auth_ticket():
     m = request.args.get("m", "")
     secret = _env_value("PRIVY_TICKET_SECRET")
     if not secret:
-        return BASE_CSS + "<div class='card'><h1>❌ Ticket no configurado</h1><p class='muted'>Falta PRIVY_TICKET_SECRET en ~/.hermes/.env</p></div>", 500
+        return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div><h1>❌ Ticket no configurado</h1><p class='muted'>Falta PRIVY_TICKET_SECRET en ~/.hermes/.env</p></div>", 500
     try:
         exp = int(e)
     except ValueError:
@@ -143,7 +168,7 @@ def auth_ticket():
         abort(403)
     allowed = _env_value("PRIVY_ALLOWED_EMAIL")
     if not allowed:
-        return BASE_CSS + "<div class='card'><h1>❌ Email no configurado</h1><p class='muted'>Falta PRIVY_ALLOWED_EMAIL en ~/.hermes/.env</p></div>", 500
+        return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div><h1>❌ Email no configurado</h1><p class='muted'>Falta PRIVY_ALLOWED_EMAIL en ~/.hermes/.env</p></div>", 500
     if m != allowed:
         abort(403)
     token = db.create_session()
@@ -220,24 +245,29 @@ def dashboard():
             <b>{a['chat_name'] or a['chat_id']}</b> pidió:<br>
             <span class='muted'>{a['action_desc']}</span><br>
             <span class='muted'>expira: {a['expires_at'][:16]}</span>
-            </div><div>
-            <button onclick="act('/actions/{a['id']}/approve')">✅ Aprobar</button>
-            <button class='danger' onclick="act('/actions/{a['id']}/deny')">❌ Negar</button>
+            </div><div class='btnrow'>
+            <button onclick="act('/actions/{a['id']}/approve')">Aprobar</button>
+            <button class='danger' onclick="act('/actions/{a['id']}/deny')">Negar</button>
             </div></div>"""
     if not act_rows:
         act_rows = "<p class='muted'>No hay acciones pendientes.</p>"
 
     return BASE_CSS + f"""
     <div class='wrap'>
-      <div style='display:flex;justify-content:space-between'><h1>Panel de administración</h1><div><a href='/history'>📜 Historial</a> &nbsp;|&nbsp; <a href='/logout'>Salir</a></div></div>
+      <div class='top'>
+        <div class='brand'><a href='/dashboard'>DORSHA</a></div>
+        <div class='nav'><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+      </div>
 
-      <div class='card' style='margin-left:0'>
-        <h1 style='font-size:16px'>⏳ Acciones sensibles pendientes</h1>
+      <div class='card'>
+        <span class='idx'>01 — PENDIENTES</span>
+        <h2>Acciones sensibles</h2>
         {act_rows}
       </div>
 
-      <div class='card' style='margin-left:0'>
-        <h1 style='font-size:16px'>👥 Usuarios autorizados</h1>
+      <div class='card'>
+        <span class='idx'>02 — ACCESO</span>
+        <h2>Usuarios</h2>
         {rows}
       </div>
     </div>
@@ -316,22 +346,29 @@ def history():
     for r in rows:
         name = id_to_name.get(r["user_id"], r["user_id"])
         items += f"""<div class='row' style='display:block'>
-          <div class='muted'>{r['created_at'][:16]} · <b>{name}</b> · {r['platform']}</div>
-          <div style='margin-top:4px'>👤 {(r['message'] or '').replace('<','&lt;').replace('>','&gt;')[:600]}</div>
-          <div style='margin-top:4px;color:#93c5fd'>🤖 {(r['response'] or '(sin respuesta aun)').replace('<','&lt;').replace('>','&gt;')[:600]}</div>
+          <div class='muted'>{r['created_at'][:16]} · <b style='color:var(--ink)'>{name}</b> · {r['platform']}</div>
+          <div style='margin-top:6px;font-size:14px'>{(r['message'] or '').replace('<','&lt;').replace('>','&gt;')[:600]}</div>
+          <div style='margin-top:6px;font-size:13.5px;color:var(--muted);border-left:2px solid var(--line);padding-left:10px'>🤖 {(r['response'] or '(sin respuesta aun)').replace('<','&lt;').replace('>','&gt;')[:600]}</div>
         </div>"""
     if not items:
         items = "<p class='muted'>Sin mensajes registrados todavia.</p>"
 
     return BASE_CSS + f"""
     <div class='wrap'>
-      <div style='display:flex;justify-content:space-between'><h1>📜 Historial de mensajes</h1><a href='/dashboard'>&larr; Panel</a></div>
-      <form method='get' class='card' style='margin-left:0;padding:14px'>
-        <select name='user_id' onchange='this.form.submit()' style='width:100%;padding:8px;background:#0f1115;color:#fff;border:1px solid #333;border-radius:6px'>
-          {opts}
-        </select>
-      </form>
-      <div class='card' style='margin-left:0'>{items}</div>
+      <div class='top'>
+        <div class='brand'><a href='/dashboard'>DORSHA</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/logout'>Salir</a></div>
+      </div>
+      <div class='card'>
+        <span class='idx'>03 — HISTORIAL</span>
+        <h2>Mensajes</h2>
+        <form method='get' style='margin:14px 0 8px'>
+          <select name='user_id' onchange='this.form.submit()'>
+            {opts}
+          </select>
+        </form>
+      </div>
+      <div class='card'>{items}</div>
     </div>
     """
 
