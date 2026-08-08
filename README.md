@@ -49,5 +49,6 @@ admin-dorsha-agent/
 - **Semáforo de salud**: gateway, túnel, saldo DeepSeek, crons (dashboard)
 - **Crons**: pausar/reanudar/ejecutar/ver logs desde `/crons`
 - **Métricas**: gasto por usuario, errores, costo por día (`/metrics`)
+- **Claves** (`/keys`): editar/testear keys globales (.env), gestionar pools (auth.json), registro de asignación por usuario (BYOK futuro)
 - **Kill switch**: apaga/reactiva gateway + crons (`/system/off`, `/system/on`)
 - **Alertas**: `scripts/health_watch.py` vía cron no_agent cada 30 min (silencio si OK)

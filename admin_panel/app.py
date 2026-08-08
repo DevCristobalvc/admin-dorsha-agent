@@ -5,6 +5,7 @@ from html import escape
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import metrics as metrics_mod
+import keymanager as km
 
 from flask import Flask, request, redirect, make_response, abort
 
@@ -338,7 +339,7 @@ def dashboard():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/crons'>Crons</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
 
       {('<p class="visitor-banner">👁 <b>Modo visitante</b> — solo lectura: puedes ver todo, pero no modificar nada.</p>' if is_visitor else '')}
@@ -615,7 +616,7 @@ def metrics_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       <div class='idx'>03 — MÉTRICAS</div>
       <h1 style='font-size:26px;margin-bottom:6px'>Métricas del sistema</h1>
@@ -794,6 +795,237 @@ def cron_output(jid):
       <p class='muted' style='margin-bottom:22px'>{escape(jid)}</p>
       <div class='card' style='font-family:monospace;font-size:12px;white-space:pre-wrap;line-height:1.5'>{body}</div>
     </div>"""
+
+
+# ---------- GESTOR DE KEYS ----------
+def _admin_only():
+    if not cookie_ok():
+        return redirect("/login")
+    if current_role() != "admin":
+        return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div><h1>🔒 Solo administrador</h1><p class='muted'>El gestor de claves es exclusivo del rol admin.</p></div>"
+    return None
+
+
+@app.route("/keys")
+def keys_page():
+    denied = _admin_only()
+    if denied:
+        return denied
+    env_keys = km.list_env_keys()
+    pools = km.list_pools()
+    user_keys = km.list_user_keys()
+    users = db.list_users()
+
+    env_rows = ""
+    for k in env_keys:
+        test_btn = f"<button class='ghost' type='button' onclick=\"testKey('env','{k['name']}',this)\">Test</button>"
+        env_rows += f"""<div class='row'><div style='min-width:0'>
+            <b>{escape(k['name'])}</b> <span class='tag'>{k['provider']}</span><br>
+            <span class='muted' style='font-family:monospace;font-size:12px'>{escape(k['masked'])}</span></div>
+            <div style='display:flex;flex-direction:column;gap:8px;align-items:flex-end'>
+            <div class='btnrow'>{test_btn}
+            <form method='post' action='/keys/env/delete' onsubmit="return confirm('¿Borrar {escape(k['name'])}?')">
+              <input type='hidden' name='name' value='{escape(k['name'])}'>
+              <button class='danger' type='submit'>Borrar</button>
+            </form></div>
+            <form method='post' action='/keys/env/save' style='display:flex;gap:8px'>
+              <input type='hidden' name='name' value='{escape(k['name'])}'>
+              <input type='text' name='value' placeholder='nuevo valor…' style='margin:0;padding:7px 10px;width:260px'>
+              <button class='ghost' type='submit'>Guardar</button>
+            </form></div></div>"""
+    if not env_rows:
+        env_rows = "<p class='muted'>Sin claves detectadas.</p>"
+
+    pool_html = ""
+    for p in pools:
+        cred_rows = ""
+        for c in p["creds"]:
+            st_class = {"ok": "ok", "error": "bad", "exhausted": "bad", "unauthorized": "bad"}.get(c["status"], "")
+            st = f"<span class='pill {st_class}'>{c['status']}</span>" if c["status"] != "unknown" else "<span class='pill'>?</span>"
+            err = f"<span class='muted'>{escape(c['error'])}</span>" if c["error"] else ""
+            cred_rows += f"""<div class='row'><div style='min-width:0'>
+                <b>{escape(c['label'])}</b> {st}<br>
+                <span class='muted'>{escape(c['masked'])}{' · ' + escape(c['base_url']) if c['base_url'] else ''}</span><br>{err}</div>
+                <div class='btnrow'>
+                <button class='ghost' type='button' onclick="testKey('pool','{c['id']}',this)">Test</button>
+                <form method='post' action='/keys/pool/remove' onsubmit="return confirm('¿Quitar {escape(c['label'])} del pool?')">
+                  <input type='hidden' name='provider' value='{escape(p['provider'])}'>
+                  <input type='hidden' name='id' value='{c['id']}'>
+                  <button class='danger' type='submit'>Quitar</button>
+                </form></div></div>"""
+        if not cred_rows:
+            cred_rows = "<p class='muted'>Pool vacío.</p>"
+        pool_html += f"""<div class='card'>
+            <span class='idx'>POOL</span>
+            <h2>{escape(p['provider'])} · {p['count']} credenciales</h2>
+            {cred_rows}
+            <form method='post' action='/keys/pool/add' style='display:flex;gap:8px;margin-top:16px;flex-wrap:wrap'>
+              <input type='hidden' name='provider' value='{escape(p['provider'])}'>
+              <input type='text' name='label' placeholder='etiqueta (ej: key-extra-1)' style='margin:0;padding:7px 10px;flex:1;min-width:160px'>
+              <input type='text' name='api_key' placeholder='sk-…' style='margin:0;padding:7px 10px;flex:2;min-width:220px'>
+              <button class='ghost' type='submit'>+ Agregar al pool</button>
+            </form></div>"""
+
+    uk_map = {u["user_id"]: u for u in user_keys}
+    user_rows = ""
+    for u in users:
+        cid = u["chat_id"]
+        uk = uk_map.get(cid)
+        if uk:
+            user_rows += f"""<div class='row'><div><b>{u['name'] or cid}</b><br>
+                <span class='muted'>{cid} · {escape(uk.get('provider','?'))} / {escape(uk.get('model','?'))} · key: {escape(uk.get('key_label','?'))}</span></div>
+                <form method='post' action='/keys/user/unassign'><input type='hidden' name='user_id' value='{cid}'>
+                <button class='danger' type='submit'>Quitar asignación</button></form></div>"""
+        else:
+            user_rows += f"""<div class='row'><div><b>{u['name'] or cid}</b><br><span class='muted'>{cid} · global</span></div></div>"""
+    if not user_rows:
+        user_rows = "<p class='muted'>Sin usuarios registrados.</p>"
+
+    user_select = "".join(f"<option value='{u['chat_id']}'>{escape(u['name'] or u['chat_id'])} ({u['chat_id']})</option>" for u in users)
+    provider_select = "".join(f"<option value='{p}'>{p}</option>" for p in ["deepseek", "openai", "openrouter", "anthropic", "google", "vercel", "github", "supabase"])
+
+    return BASE_CSS + f"""
+    <div class='wrap'>
+      <div class='top'>
+        <div class='brand'><a href='/dashboard'>DORSHA</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/metrics'>Métricas</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+      </div>
+      <div class='idx'>05 — CLAVES</div>
+      <h1 style='font-size:26px;margin-bottom:6px'>Gestor de API keys</h1>
+      <p class='muted' style='margin-bottom:22px'>Globales (.env), pools (auth.json) y asignación por usuario.
+      Los cambios en .env aplican tras reiniciar el gateway; los pools aplican al siguiente uso.</p>
+
+      <div class='card'>
+        <span class='idx'>GLOBALES</span>
+        <h2>Claves del entorno — todos los usuarios</h2>
+        {env_rows}
+      </div>
+
+      {pool_html}
+
+      <div class='card'>
+        <span class='idx'>POR USUARIO</span>
+        <h2>Asignación de claves</h2>
+        <p class='muted' style='margin-bottom:14px'>Registro de asignación por usuario. Nota: Hermes hoy enruta a todos por la key global; la asignación queda documentada para gestión y futuro soporte BYOK.</p>
+        {user_rows}
+        <form method='post' action='/keys/user/assign' style='display:flex;gap:8px;margin-top:18px;flex-wrap:wrap'>
+          <select name='user_id' style='margin:0;padding:8px 10px;flex:1;min-width:180px'>{user_select}</select>
+          <select name='provider' style='margin:0;padding:8px 10px'>{provider_select}</select>
+          <input type='text' name='model' placeholder='modelo (ej: deepseek-v4-flash)' style='margin:0;padding:8px 10px;flex:1;min-width:180px'>
+          <input type='text' name='key_label' placeholder='key / pool a usar' style='margin:0;padding:8px 10px;flex:1;min-width:140px'>
+          <button type='submit'>Asignar</button>
+        </form>
+      </div>
+    </div>
+    <script>
+    async function testKey(source, ref, btn){{
+      btn.textContent='…';
+      try{{
+        const r = await fetch('/keys/test', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{source, ref}})}});
+        const d = await r.json();
+        btn.textContent = d.ok ? '✅ '+d.detail : '❌ '+d.detail;
+        btn.style.borderColor = d.ok ? '#15803d' : '#dc2626';
+      }}catch(e){{ btn.textContent='❌ err'; }}
+    }}
+    </script>
+    """
+
+
+@app.route("/keys/test", methods=["POST"])
+def keys_test():
+    if current_role() != "admin":
+        abort(403)
+    data = request.get_json(silent=True) or {}
+    source, ref = data.get("source"), data.get("ref", "")
+    key, provider = "", ""
+    if source == "env":
+        env = km._load_env()
+        key = env.get(ref, "")
+        provider = km._provider_for_var(ref) or "generic"
+    elif source == "pool":
+        d = km._load_auth()
+        for prov, creds in d.get("credential_pool", {}).items():
+            for c in creds or []:
+                if c.get("id") == ref:
+                    provider = prov
+                    key = c.get("api_key") or c.get("token") or c.get("oauth_token") or ""
+    if not key:
+        return {"ok": False, "detail": "clave no encontrada"}
+    ok, det = km.test_key(provider, key)
+    return {"ok": ok, "detail": det}
+
+
+@app.route("/keys/env/save", methods=["POST"])
+def keys_env_save():
+    if current_role() != "admin":
+        abort(403)
+    name = request.form.get("name", "").strip()
+    value = request.form.get("value", "").strip()
+    if name and value:
+        km.set_env_key(name, value)
+        db.log_system_event("KEY_EDIT", f"{name} actualizada", SUPER_ADMIN)
+    return redirect("/keys")
+
+
+@app.route("/keys/env/delete", methods=["POST"])
+def keys_env_delete():
+    if current_role() != "admin":
+        abort(403)
+    name = request.form.get("name", "").strip()
+    if name:
+        km.delete_env_key(name)
+        db.log_system_event("KEY_DELETE", f"{name} eliminada", SUPER_ADMIN)
+    return redirect("/keys")
+
+
+@app.route("/keys/pool/add", methods=["POST"])
+def keys_pool_add():
+    if current_role() != "admin":
+        abort(403)
+    provider = request.form.get("provider", "").strip()
+    label = request.form.get("label", "").strip() or "key-extra"
+    api_key = request.form.get("api_key", "").strip()
+    if provider and api_key:
+        km.add_pool_key(provider, label, api_key)
+        db.log_system_event("POOL_ADD", f"{provider}: {label}", SUPER_ADMIN)
+    return redirect("/keys")
+
+
+@app.route("/keys/pool/remove", methods=["POST"])
+def keys_pool_remove():
+    if current_role() != "admin":
+        abort(403)
+    provider = request.form.get("provider", "").strip()
+    cid = request.form.get("id", "").strip()
+    if provider and cid:
+        km.remove_pool_key(provider, cid)
+        db.log_system_event("POOL_REMOVE", f"{provider}: {cid[:10]}", SUPER_ADMIN)
+    return redirect("/keys")
+
+
+@app.route("/keys/user/assign", methods=["POST"])
+def keys_user_assign():
+    if current_role() != "admin":
+        abort(403)
+    uid = request.form.get("user_id", "").strip()
+    provider = request.form.get("provider", "").strip()
+    model = request.form.get("model", "").strip()
+    key_label = request.form.get("key_label", "").strip()
+    if uid and provider:
+        km.assign_user_key(uid, provider, model, key_label)
+        db.log_system_event("KEY_ASSIGN", f"{uid} -> {provider}/{model}", SUPER_ADMIN)
+    return redirect("/keys")
+
+
+@app.route("/keys/user/unassign", methods=["POST"])
+def keys_user_unassign():
+    if current_role() != "admin":
+        abort(403)
+    uid = request.form.get("user_id", "").strip()
+    if uid:
+        km.unassign_user_key(uid)
+        db.log_system_event("KEY_UNASSIGN", f"{uid}", SUPER_ADMIN)
+    return redirect("/keys")
 
 
 if __name__ == "__main__":
