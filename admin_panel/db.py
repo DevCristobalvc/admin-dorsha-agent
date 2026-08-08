@@ -58,7 +58,14 @@ def init_db():
         actor TEXT,
         created_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS vault_guard (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        fail_count INTEGER DEFAULT 0,
+        locked_until TEXT
+    );
     """)
+    # migración: fila inicial del guard del vault
+    conn.execute("INSERT OR IGNORE INTO vault_guard (id, fail_count, locked_until) VALUES (1, 0, NULL)")
     # migración: columna role en sessions (bases antiguas)
     cols = [c[1] for c in conn.execute("PRAGMA table_info(sessions)").fetchall()]
     if "role" not in cols:
@@ -103,6 +110,33 @@ def check_password(password: str) -> bool:
     if not row:
         return False
     return verify_password(password, row["password_hash"])
+
+# --- vault guard (anti fuerza bruta) ---
+def vault_guard_status() -> dict:
+    conn = get_conn()
+    row = conn.execute("SELECT fail_count, locked_until FROM vault_guard WHERE id=1").fetchone()
+    conn.close()
+    if not row:
+        return {"fail_count": 0, "locked_until": None}
+    return {"fail_count": row["fail_count"], "locked_until": row["locked_until"]}
+
+def vault_register_fail():
+    conn = get_conn()
+    conn.execute("UPDATE vault_guard SET fail_count = fail_count + 1 WHERE id=1")
+    conn.commit()
+    conn.close()
+
+def vault_lock_until(until_iso: str):
+    conn = get_conn()
+    conn.execute("UPDATE vault_guard SET locked_until=? WHERE id=1", (until_iso,))
+    conn.commit()
+    conn.close()
+
+def vault_clear_fails():
+    conn = get_conn()
+    conn.execute("UPDATE vault_guard SET fail_count=0, locked_until=NULL WHERE id=1")
+    conn.commit()
+    conn.close()
 
 # --- sessions ---
 def create_session(role: str = "admin") -> str:

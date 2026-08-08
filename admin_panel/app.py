@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import os, sys, re, json, subprocess, hashlib, hmac, time
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -339,7 +339,7 @@ def dashboard():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/secrets'>Secretos</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
 
       {('<p class="visitor-banner">👁 <b>Modo visitante</b> — solo lectura: puedes ver todo, pero no modificar nada.</p>' if is_visitor else '')}
@@ -616,7 +616,7 @@ def metrics_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/secrets'>Secretos</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       <div class='idx'>03 — MÉTRICAS</div>
       <h1 style='font-size:26px;margin-bottom:6px'>Métricas del sistema</h1>
@@ -725,7 +725,7 @@ def crons_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/metrics'>Métricas</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/metrics'>Métricas</a><a href='/secrets'>Secretos</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       {('<p class="visitor-banner">👁 <b>Modo visitante</b> — solo lectura.</p>' if is_visitor else '')}
       <div class='idx'>02 — AUTOMATIZACIONES</div>
@@ -888,7 +888,7 @@ def keys_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/metrics'>Métricas</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/metrics'>Métricas</a><a href='/secrets'>Secretos</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       <div class='idx'>05 — CLAVES</div>
       <h1 style='font-size:26px;margin-bottom:6px'>Gestor de API keys</h1>
@@ -1026,6 +1026,296 @@ def keys_user_unassign():
         km.unassign_user_key(uid)
         db.log_system_event("KEY_UNASSIGN", f"{uid}", SUPER_ADMIN)
     return redirect("/keys")
+
+
+# ---------- VAULT DE SECRETOS ----------
+# Pestaña /secrets (solo admin): muestra los .env reales protegidos por una
+# master password propia (segundo factor, separada del login Privy).
+# La password se guarda SOLO hasheada (PBKDF2+salt) en admin_panel.db.
+# Anti fuerza bruta: 5 fallos -> bloqueo 15 min (persistido en vault_guard).
+# Auto-lock: 10 min de inactividad; lock manual con botón. Todo se audita.
+VAULT_LOCK_MIN = 10
+VAULT_MAX_FAILS = 5
+VAULT_LOCKOUT_MIN = 15
+_VAULT_UNLOCKED = {}  # session token -> time.time()
+
+
+def _vault_unlocked(token):
+    ts = _VAULT_UNLOCKED.get(token)
+    if not ts:
+        return False
+    if time.time() - ts > VAULT_LOCK_MIN * 60:
+        _VAULT_UNLOCKED.pop(token, None)
+        return False
+    return True
+
+
+def _vault_touch(token):
+    _VAULT_UNLOCKED[token] = time.time()
+
+
+def _vault_lock(token):
+    _VAULT_UNLOCKED.pop(token, None)
+
+
+def _env_files():
+    files = [{"id": "default", "label": "default", "path": ENV_PATH}]
+    base = os.path.expanduser("~/.hermes/profiles")
+    if os.path.isdir(base):
+        for name in sorted(os.listdir(base)):
+            p = os.path.join(base, name, ".env")
+            if os.path.isfile(p):
+                files.append({"id": name, "label": name, "path": p})
+    return files
+
+
+def _load_env_file(path):
+    env = {}
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+def _mask_value(v):
+    if len(v) <= 8:
+        return "•" * len(v)
+    return v[:4] + "…" + v[-4:]
+
+
+def _vault_msg(err, extra=""):
+    return BASE_CSS + f"""<div class='msg'>
+      <div class='bar'></div>
+      <div class='idx'>DORSHA · ADMIN</div>
+      <h1>🔐 Vault de secretos</h1>
+      <p class='muted' style='margin:14px 0 22px'>{extra}</p>
+      {'<p style="color:var(--danger);margin-bottom:18px;font-size:14px">⚠️ ' + escape(err) + '</p>' if err else ''}
+      <form method='post' action='/secrets/unlock'>
+        <input type='password' name='p' placeholder='Master password' required autofocus>
+        <button type='submit'>🔓 Desbloquear vault</button>
+      </form>
+      <p class='muted' style='margin-top:16px;font-size:12px'>Solo lectura de archivos .env reales del servidor.
+      ¿Olvidaste la contraseña? Resetea por SSH:
+      <code style='font-size:11px'>python3 -c "import sys;sys.path.insert(0,chr(126)+'/.hermes/admin_panel');import db;db.set_password('nueva')"</code></p>
+    </div>"""
+
+
+@app.route("/secrets")
+def secrets_page():
+    denied = _admin_only()
+    if denied:
+        return denied
+    token = request.cookies.get("session")
+    err = request.args.get("err", "")
+    file_id = request.args.get("file", "default")
+    files = _env_files()
+    cur = next((f for f in files if f["id"] == file_id), files[0])
+    unlocked = _vault_unlocked(token)
+
+    if not db.password_is_set():
+        return BASE_CSS + f"""<div class='msg'>
+      <div class='bar'></div>
+      <div class='idx'>DORSHA · ADMIN</div>
+      <h1>🔐 Crear vault</h1>
+      <p class='muted' style='margin:14px 0 22px'>Primera vez: define la <b>master password</b> del vault.
+      Se guarda <b>hasheada</b> en la BD del panel (nunca en claro). Con ella verás las .env completas.</p>
+      {'<p style="color:var(--danger);margin-bottom:18px;font-size:14px">⚠️ ' + escape(err) + '</p>' if err else ''}
+      <form method='post' action='/secrets/setup'>
+        <input type='password' name='p1' placeholder='Master password (mínimo 8 caracteres)' required minlength='8'>
+        <input type='password' name='p2' placeholder='Repite la master password' required minlength='8'>
+        <button type='submit'>Crear vault</button>
+      </form>
+      <p class='muted' style='margin-top:16px;font-size:12px'>El login del panel sigue siendo solo Privy (email + OTP). Esta contraseña es una capa extra para leer secretos.</p>
+    </div>"""
+
+    if not unlocked:
+        g = db.vault_guard_status()
+        lockout = ""
+        if g["locked_until"]:
+            try:
+                left = (datetime.fromisoformat(g["locked_until"]) - datetime.utcnow()).total_seconds()
+            except Exception:
+                left = 0
+            if left > 0:
+                lockout = (f"🔒 <b>Vault bloqueado</b> por intentos fallidos. "
+                           f"Espera {int(left // 60) + 1} min. Fallos acumulados: {g['fail_count']}.")
+        return _vault_msg(err, lockout)
+
+    env = _load_env_file(cur["path"])
+    rows = ""
+    for k, v in sorted(env.items()):
+        masked = _mask_value(v)
+        rows += f"""<div class='row' data-key='{escape(k)}' data-masked='{escape(masked)}' style='align-items:flex-start'>
+          <div style='min-width:0;flex:1'>
+            <b>{escape(k)}</b><br>
+            <span class='muted mono' style='font-family:monospace;font-size:12px;word-break:break-all'>{escape(masked)}</span>
+          </div>
+          <div class='btnrow' style='flex-shrink:0'>
+            <button class='ghost' type='button' onclick='reveal(this)'>👁 Mostrar</button>
+            <button class='ghost copy' type='button' onclick='copyVal(this)' disabled title='Revela el valor primero'>📋</button>
+          </div>
+        </div>"""
+    if not rows:
+        rows = "<p class='muted'>Archivo vacío o solo comentarios.</p>"
+
+    file_opts = "".join(
+        f"<option value='{f['id']}' {'selected' if f['id'] == cur['id'] else ''}>{escape(f['label'])}</option>"
+        for f in files)
+
+    return BASE_CSS + f"""
+    <div class='wrap'>
+      <div class='top'>
+        <div class='brand'><a href='/dashboard'>DORSHA</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/secrets'>Secretos</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+      </div>
+      <div class='idx'>06 — SECRETOS</div>
+      <h1 style='font-size:26px;margin-bottom:6px'>Vault de secretos</h1>
+      <p class='muted' style='margin-bottom:22px'>Archivos .env reales del servidor. Se auto-bloquea a los {VAULT_LOCK_MIN} min de inactividad; cada revelación queda auditada.</p>
+
+      <div style='display:flex;gap:10px;align-items:center;margin-bottom:22px;flex-wrap:wrap'>
+        <select id='fileSel' onchange="location='?file='+this.value" style='margin:0;padding:8px 10px;width:auto'>{file_opts}</select>
+        <span class='tag'>{len(env)} vars</span>
+        <span class='tag active'>🔓 desbloqueado</span>
+        <form method='post' action='/secrets/lock' style='margin-left:auto'>
+          <button class='ghost' type='submit'>🔒 Bloquear ahora</button>
+        </form>
+      </div>
+
+      <div class='card'>
+        <span class='idx'>{escape(cur['label'].upper())}</span>
+        <h2 style='font-family:monospace;font-size:14px;word-break:break-all'>{escape(cur['path'])}</h2>
+        <input type='text' id='filter' placeholder='Filtrar variables… (escribe el nombre)' style='margin:14px 0 8px' oninput='filterRows(this.value)'>
+        {rows}
+      </div>
+    </div>
+    <script>
+    function reveal(btn){{
+      const row = btn.closest('.row');
+      const span = row.querySelector('.mono');
+      const file = document.getElementById('fileSel').value;
+      if(btn.dataset.on === '1'){{
+        span.textContent = row.dataset.masked;
+        span.style.background = 'transparent';
+        btn.textContent = '👁 Mostrar';
+        btn.dataset.on = '';
+        row.querySelector('.copy').disabled = true;
+        return;
+      }}
+      btn.textContent = '…';
+      fetch('/secrets/reveal', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{file, key: row.dataset.key}})}})
+        .then(r=>r.json()).then(d=>{{
+          if(d.ok){{
+            span.textContent = d.value;
+            span.style.background = '#fafafa';
+            btn.textContent = '🙈 Ocultar';
+            btn.dataset.on = '1';
+            row.querySelector('.copy').disabled = false;
+          }} else {{
+            btn.textContent = '❌ ' + d.detail;
+            setTimeout(()=>btn.textContent='👁 Mostrar', 2500);
+          }}
+        }}).catch(()=>btn.textContent='❌ err');
+    }}
+    function copyVal(btn){{
+      const txt = btn.closest('.row').querySelector('.mono').textContent;
+      navigator.clipboard.writeText(txt).then(()=>{{
+        btn.textContent = '✅';
+        setTimeout(()=>btn.textContent='📋', 1200);
+      }});
+    }}
+    function filterRows(q){{
+      q = q.toLowerCase();
+      document.querySelectorAll('.row[data-key]').forEach(r => {{
+        r.style.display = r.dataset.key.toLowerCase().includes(q) ? '' : 'none';
+      }});
+    }}
+    </script>
+    """
+
+
+@app.route("/secrets/setup", methods=["POST"])
+def secrets_setup():
+    denied = _admin_only()
+    if denied:
+        return denied
+    p1 = request.form.get("p1", "")
+    p2 = request.form.get("p2", "")
+    if len(p1) < 8:
+        return redirect("/secrets?err=" + "La contraseña debe tener al menos 8 caracteres")
+    if p1 != p2:
+        return redirect("/secrets?err=" + "Las contraseñas no coinciden")
+    db.set_password(p1)
+    token = request.cookies.get("session")
+    _vault_touch(token)
+    db.vault_clear_fails()
+    db.log_system_event("VAULT_SETUP", "Master password del vault creada", SUPER_ADMIN)
+    return redirect("/secrets")
+
+
+@app.route("/secrets/unlock", methods=["POST"])
+def secrets_unlock():
+    denied = _admin_only()
+    if denied:
+        return denied
+    token = request.cookies.get("session")
+    g = db.vault_guard_status()
+    if g["locked_until"]:
+        try:
+            left = (datetime.fromisoformat(g["locked_until"]) - datetime.utcnow()).total_seconds()
+        except Exception:
+            left = 0
+        if left > 0:
+            return redirect(f"/secrets?err=Vault bloqueado por intentos fallidos. Espera {int(left // 60) + 1} min.")
+    p = request.form.get("p", "")
+    if db.check_password(p):
+        _vault_touch(token)
+        db.vault_clear_fails()
+        db.log_system_event("VAULT_UNLOCK", "Vault desbloqueado", SUPER_ADMIN)
+        return redirect("/secrets")
+    db.vault_register_fail()
+    g = db.vault_guard_status()
+    db.log_system_event("VAULT_FAIL", f"Intento fallido {g['fail_count']}/{VAULT_MAX_FAILS}", SUPER_ADMIN)
+    if g["fail_count"] >= VAULT_MAX_FAILS:
+        until = datetime.utcnow() + timedelta(minutes=VAULT_LOCKOUT_MIN)
+        db.vault_lock_until(until.isoformat())
+        db.log_system_event("VAULT_LOCKOUT", f"{VAULT_LOCKOUT_MIN} min por intentos fallidos", SUPER_ADMIN)
+        return redirect("/secrets?err=" + f"Demasiados intentos. Vault bloqueado {VAULT_LOCKOUT_MIN} min.")
+    return redirect("/secrets?err=" + f"Contraseña incorrecta ({g['fail_count']}/{VAULT_MAX_FAILS} intentos)")
+
+
+@app.route("/secrets/lock", methods=["POST"])
+def secrets_lock():
+    if current_role() != "admin":
+        abort(403)
+    token = request.cookies.get("session")
+    _vault_lock(token)
+    db.log_system_event("VAULT_LOCK", "Vault bloqueado manualmente", SUPER_ADMIN)
+    return redirect("/secrets")
+
+
+@app.route("/secrets/reveal", methods=["POST"])
+def secrets_reveal():
+    if current_role() != "admin":
+        abort(403)
+    token = request.cookies.get("session")
+    if not _vault_unlocked(token):
+        return {"ok": False, "detail": "Vault bloqueado"}, 403
+    data = request.get_json(silent=True) or {}
+    file_id = data.get("file", "default")
+    key = data.get("key", "")
+    files = _env_files()
+    cur = next((f for f in files if f["id"] == file_id), None)
+    if not cur:
+        return {"ok": False, "detail": "Archivo no encontrado"}, 404
+    env = _load_env_file(cur["path"])
+    if key not in env:
+        return {"ok": False, "detail": "Variable no encontrada"}, 404
+    _vault_touch(token)
+    db.log_system_event("VAULT_REVEAL", f"{key} ({cur['id']})", SUPER_ADMIN)
+    return {"ok": True, "key": key, "value": env[key]}
 
 
 if __name__ == "__main__":
