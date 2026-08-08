@@ -113,61 +113,26 @@ def index():
         return redirect("/dashboard")
     return redirect("/login")
 
-# ---------- SETUP (solo si no hay contraseña) ----------
-@app.route("/setup", methods=["GET", "POST"])
-def setup():
-    if db.password_is_set():
-        return redirect("/login")
-    if request.method == "POST":
-        p1 = request.form.get("password", "")
-        p2 = request.form.get("password2", "")
-        if len(p1) < 6:
-            return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · SETUP</div><h1>Error</h1><p class='muted'>Contraseña muy corta (min 6).</p><p style='margin-top:14px'><a href='/setup'>← Volver</a></p></div>"
-        if p1 != p2:
-            return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · SETUP</div><h1>Error</h1><p class='muted'>No coinciden.</p><p style='margin-top:14px'><a href='/setup'>← Volver</a></p></div>"
-        db.set_password(p1)
-        token = db.create_session()
-        resp = make_response(redirect("/dashboard"))
-        resp.set_cookie("session", token, httponly=True, samesite="Lax", max_age=3600*12)
-        return resp
-    return BASE_CSS + """
-    <div class='msg'>
-      <div class='bar'></div>
-      <div class='idx'>DORSHA · SETUP</div>
-      <h1>Crear contraseña de administrador</h1>
-      <p class='muted'>Primera vez. Esta contraseña queda hasheada (PBKDF2-SHA256), nadie puede leerla despues.</p>
-      <form method='post'>
-        <input type='password' name='password' placeholder='Nueva contraseña' required>
-        <input type='password' name='password2' placeholder='Repetir contraseña' required>
-        <button type='submit'>Crear y entrar</button>
-      </form>
-    </div>"""
-
 # ---------- LOGIN ----------
+# El acceso por contraseña fue ELIMINADO (decisión de seguridad, 2026-08).
+# La única puerta es Privy: landing -> email + OTP -> ticket -> sesión.
+# Emergencias: SSH al servidor.
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if not db.password_is_set():
-        return redirect("/setup")
-    if request.method == "POST":
-        p = request.form.get("password", "")
-        if db.check_password(p):
-            token = db.create_session()
-            resp = make_response(redirect("/dashboard"))
-            resp.set_cookie("session", token, httponly=True, samesite="Lax", max_age=3600*12)
-            return resp
-        return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div><h1>❌ Contraseña incorrecta</h1><p style='margin-top:14px'><a href='/login'>← Reintentar</a></p></div>"
     return BASE_CSS + """
     <div class='msg'>
       <div class='bar'></div>
       <div class='idx'>DORSHA · ADMIN</div>
-      <h1>Panel de administración</h1>
-      <p class='muted' style='margin-bottom:18px'>Gero / Dinco · acceso restringido</p>
-      <form method='post'>
-        <input type='password' name='password' placeholder='Contraseña' required autofocus>
-        <button type='submit'>Entrar</button>
-      </form>
-      <p class='muted' style='margin-top:18px;font-size:12px'><a href='https://dorsha.devcristobalvc.com/login'>← Entrar con email y código (Dorsha)</a></p>
+      <h1>🔒 Acceso con email y código</h1>
+      <p class='muted' style='margin-bottom:20px'>El login por contraseña fue eliminado. El acceso al panel es solo con email + código desde la landing.</p>
+      <a href='https://dorsha.devcristobalvc.com/login'><button type='button'>Entrar con email y código →</button></a>
+      <p class='muted' style='margin-top:18px;font-size:12px'>¿Emergencia? Accede por SSH al servidor (<code>127.0.0.1:5057</code>).</p>
     </div>"""
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    return redirect("/login")
 
 @app.route("/logout")
 def logout():

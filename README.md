@@ -45,6 +45,7 @@ admin-dorsha-agent/
 
 ## Funciones del panel
 - **Roles**: admin (todo) / visitante (solo lectura — `PRIVY_VISITOR_EMAILS` en .env)
+- **Auth**: SOLO Privy (email+OTP). Login por contraseña ELIMINADO (2026-08). Emergencias: SSH
 - **Semáforo de salud**: gateway, túnel, saldo DeepSeek, crons (dashboard)
 - **Crons**: pausar/reanudar/ejecutar/ver logs desde `/crons`
 - **Métricas**: gasto por usuario, errores, costo por día (`/metrics`)
