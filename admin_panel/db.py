@@ -167,6 +167,37 @@ def session_valid(token: str) -> bool:
         return False
     return datetime.fromisoformat(row["expires_at"]) > datetime.utcnow()
 
+
+def list_sessions():
+    """Sesiones con token enmascarado, rol y vigencia (para el dashboard)."""
+    conn = get_conn()
+    rows = conn.execute("SELECT token, role, created_at, expires_at FROM sessions ORDER BY created_at DESC").fetchall()
+    conn.close()
+    out = []
+    now = datetime.utcnow()
+    for r in rows:
+        try:
+            exp = datetime.fromisoformat(r["expires_at"])
+            active = exp > now
+        except Exception:
+            active = False
+        out.append({
+            "token": r["token"],
+            "token_masked": (r["token"][:8] + "…") if r["token"] else "?",
+            "role": r["role"] or "admin",
+            "created_at": (r["created_at"] or "")[:19].replace("T", " "),
+            "expires_at": (r["expires_at"] or "")[:19].replace("T", " "),
+            "active": active,
+        })
+    return out
+
+
+def delete_session(token: str):
+    conn = get_conn()
+    conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+    conn.commit()
+    conn.close()
+
 # --- users ---
 def sync_users_from_channel_directory():
     path = os.path.expanduser("~/.hermes/channel_directory.json")

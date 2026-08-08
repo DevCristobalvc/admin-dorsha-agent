@@ -223,6 +223,63 @@ def activity(days=14):
     return [{"date": r["d"], "count": r["n"]} for r in rows]
 
 
+def daily_series(days=14):
+    """Serie por día: mensajes, sesiones, tokens in/out, costo (últimos N días).
+    Un solo barrido de state.db; útil para gráficas (Chart.js)."""
+    conn = _state_conn()
+    since_ts = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+    sid_cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
+
+    # mensajes por día (timestamp epoch, local)
+    msg_rows = conn.execute(
+        "SELECT date(timestamp,'unixepoch','localtime') d, COUNT(*) n FROM messages "
+        "WHERE timestamp >= ? GROUP BY d", (since_ts,)).fetchall()
+
+    # sesiones por día (fecha en el id)
+    sessions = conn.execute("SELECT id FROM sessions").fetchall()
+    sess_by_day = {}
+    for s in sessions:
+        d = _sid_date(s["id"])
+        if d and d >= sid_cutoff:
+            sess_by_day[d[:4] + "-" + d[4:6] + "-" + d[6:8]] = \
+                sess_by_day.get(d[:4] + "-" + d[4:6] + "-" + d[6:8], 0) + 1
+
+    # tokens/costo por día (fecha en el id de sesión)
+    usage = conn.execute(
+        "SELECT session_id, model, input_tokens, output_tokens, cache_read_tokens, "
+        "estimated_cost_usd FROM session_model_usage").fetchall()
+    tok_by_day, cost_by_day = {}, {}
+    for r in usage:
+        d = _sid_date(r["session_id"])
+        if not d or d < sid_cutoff:
+            continue
+        date = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        cost = r["estimated_cost_usd"] or 0
+        rates = FALLBACK_RATES.get(r["model"])
+        if rates and not cost:
+            cost = (r["input_tokens"] * rates["input"] + r["output_tokens"] * rates["output"]
+                    + r["cache_read_tokens"] * rates["cache_read"]) / 1_000_000
+        i, o = tok_by_day.get(date, [0, 0])
+        tok_by_day[date] = [i + (r["input_tokens"] or 0), o + (r["output_tokens"] or 0)]
+        cost_by_day[date] = cost_by_day.get(date, 0.0) + cost
+    conn.close()
+
+    msg_map = {r["d"]: r["n"] for r in msg_rows}
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
+        ti, to = tok_by_day.get(d, [0, 0])
+        out.append({
+            "date": d,
+            "messages": msg_map.get(d, 0),
+            "sessions": sess_by_day.get(d, 0),
+            "tokens_in": ti,
+            "tokens_out": to,
+            "cost": round(cost_by_day.get(d, 0.0), 4),
+        })
+    return out
+
+
 def models():
     conn = _state_conn()
     rows = conn.execute(

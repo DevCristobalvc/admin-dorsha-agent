@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, re, json, subprocess, hashlib, hmac, time
+import os, sys, re, json, io, sqlite3, zipfile, tempfile, subprocess, hashlib, hmac, time
 from datetime import datetime, timedelta
 from html import escape
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +25,26 @@ def _read_env(key, default=None):
     except Exception:
         pass
     return default
+
+
+def _tail_log(n=400):
+    """Últimas N líneas del log del gateway (lectura segura de archivo grande)."""
+    path = os.path.expanduser("~/.hermes/logs/gateway.log")
+    try:
+        stat = os.stat(path)
+        if not stat.st_size:
+            return ["(log vacío)"]
+        with open(path, "rb") as f:
+            if stat.st_size > 300_000:
+                f.seek(stat.st_size - 300_000)
+                f.readline()  # descarta línea parcial
+            tail = f.read().decode("utf-8", errors="ignore")
+        lines = tail.splitlines()[-n:]
+        return lines or ["(log vacío)"]
+    except FileNotFoundError:
+        return ["(no existe ~/.hermes/logs/gateway.log)"]
+    except Exception as e:
+        return [f"(error leyendo log: {e})"]
 
 SUPER_ADMIN = os.environ.get("ADMIN_CHAT_ID") or _read_env("ADMIN_CHAT_ID")
 
@@ -301,10 +321,10 @@ def dashboard():
         <h2>Kill switch</h2>
         <div style='margin:14px 0 18px'>{badge}</div>
         <div class='btnrow' style='justify-content:flex-start'>
-          <form method='post' action='/system/off' onsubmit="return confirm('¿Apagar TODO el sistema? El bot dejará de responder y los crons se pausan.')">
+          <form method='post' action='/system/off' onsubmit="return confirm('¿Apagar TODO el sistema? El bot dejará de responder y los crons se pausan.') && withMaster(this)">
             <button class='danger-btn' type='submit'>🛑 Apagar sistema</button>
           </form>
-          <form method='post' action='/system/on'>
+          <form method='post' action='/system/on' onsubmit="return withMaster(this)">
             <button type='submit'>▶ Reactivar</button>
           </form>
         </div>
@@ -312,6 +332,31 @@ def dashboard():
       </div>"""
     except Exception:
         system_card = ""
+
+    # ---- SESIONES ACTIVAS ----
+    try:
+        sess = db.list_sessions()
+        my_token = request.cookies.get("session")
+        sess_rows = ""
+        for s in sess:
+            tag = ("<span class='tag active'>activa</span>" if s["active"] else "<span class='tag'>expirada</span>")
+            mine = " <span class='muted'>(esta)</span>" if s["token"] == my_token else ""
+            revoke = "" if (is_visitor or not s["active"]) else (
+                f"<form method='post' action='/sessions/{s['token']}/revoke' "
+                f"onsubmit=\"return confirm('¿Revocar esta sesión? Se cerrará en ese dispositivo.')\">"
+                f"<button class='danger' type='submit'>Revocar</button></form>")
+            sess_rows += f"""<div class='row'><div><b>{s['token_masked']}</b>{mine} {tag}<br>
+                <span class='muted'>{s['role']} · creada {s['created_at']} · expira {s['expires_at']}</span></div>{revoke}</div>"""
+        if not sess_rows:
+            sess_rows = "<p class='muted'>Sin sesiones.</p>"
+        sessions_card = f"""
+      <div class='card'>
+        <span class='idx'>05 — SESIONES</span>
+        <h2>Sesiones activas</h2>
+        {sess_rows}
+      </div>"""
+    except Exception:
+        sessions_card = ""
 
     # ---- SEMÁFORO DE SALUD ----
     try:
@@ -339,7 +384,7 @@ def dashboard():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/secrets'>Secretos</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/secrets'>Secretos</a><a href='/logs'>Logs</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
 
       {('<p class="visitor-banner">👁 <b>Modo visitante</b> — solo lectura: puedes ver todo, pero no modificar nada.</p>' if is_visitor else '')}
@@ -361,10 +406,20 @@ def dashboard():
       {metrics_card}
 
       {system_card}
+
+      {sessions_card}
     </div>
     <script>
     function act(url) {{
       fetch(url, {{method:'POST'}}).then(()=>location.reload());
+    }}
+    function withMaster(form){{
+      const pw = prompt('🔐 Master password (vault):');
+      if(pw === null) return false;
+      let inp = form.querySelector('input[name="master_pw"]');
+      if(!inp){{ inp = document.createElement('input'); inp.type='hidden'; inp.name='master_pw'; form.appendChild(inp); }}
+      inp.value = pw;
+      return true;
     }}
     </script>
     """
@@ -518,6 +573,9 @@ def system_off():
         abort(403)
     if current_role() != "admin":
         abort(403)
+    denied = _require_master(request.form)
+    if denied:
+        return denied
     try:
         _cron_pause_all()
     except Exception as e:
@@ -534,6 +592,9 @@ def system_on():
         abort(403)
     if current_role() != "admin":
         abort(403)
+    denied = _require_master(request.form)
+    if denied:
+        return denied
     try:
         _cron_restore()
     except Exception:
@@ -543,6 +604,15 @@ def system_on():
     subprocess.run(["systemctl", "--user", "start", "hermes-gateway.service"], timeout=20)
     db.log_system_event("SYSTEM_ON", "Sistema reactivado: gateway + crons restaurados", SUPER_ADMIN)
     return {"ok": True}
+
+
+@app.route("/sessions/<token>/revoke", methods=["POST"])
+def session_revoke(token):
+    if not cookie_ok() or current_role() != "admin":
+        abort(403)
+    db.delete_session(token)
+    db.log_system_event("SESSION_REVOKE", f"sesión {token[:8]}… revocada", SUPER_ADMIN)
+    return redirect("/dashboard")
 
 
 # ---------- MÉTRICAS ----------
@@ -575,6 +645,59 @@ def metrics_page():
     models = metrics_mod.models()
     plats = metrics_mod.platforms()
     tools = metrics_mod.top_tools(10)
+
+    # ---- datos para Chart.js (14 días) ----
+    series = metrics_mod.daily_series(14)
+    ch_dates = json.dumps([s["date"][5:] for s in series])
+    ch_msgs = json.dumps([s["messages"] for s in series])
+    ch_sess = json.dumps([s["sessions"] for s in series])
+    ch_cost = json.dumps([s["cost"] for s in series])
+    ch_tin = json.dumps([s["tokens_in"] for s in series])
+    ch_tout = json.dumps([s["tokens_out"] for s in series])
+    ch_plats = json.dumps([p["platform"] for p in plats])
+    ch_plat_n = json.dumps([p["sessions"] for p in plats])
+    ch_tools = json.dumps([t["tool"] for t in tools][::-1])
+    ch_tools_n = json.dumps([t["calls"] for t in tools][::-1])
+    top_models = models[:6]
+    ch_models = json.dumps([m["model"] for m in top_models][::-1])
+    ch_models_n = json.dumps([round(m["cost"], 4) for m in top_models][::-1])
+
+    # ---- diagrama de ejecución (pipeline vivo) ----
+    gw = metrics_mod.gateway_status()
+    tun_state, tun_url = metrics_mod.tunnel_status()
+    bal, _ = metrics_mod.balance()
+    bal_num = 0.0
+    mm = re.search(r"[\d.]+", bal or "")
+    if mm:
+        bal_num = float(mm.group(0))
+    fails_list, total_n = metrics_mod.cron_failures()
+    fails_n = len(fails_list)
+
+    def box(x, title, sub, ok):
+        color = "#15803d" if ok else "#dc2626"
+        return (f"<g><rect x='{x}' y='18' width='150' height='54' rx='8' fill='#fff' stroke='#e4e4e4'/>"
+                f"<circle cx='{x+14}' cy='30' r='4' fill='{color}'/>"
+                f"<text x='{x+24}' y='34' font-family='Space Grotesk,monospace' font-size='12' fill='#0a0a0a'>{title}</text>"
+                f"<text x='{x+14}' y='54' font-family='monospace' font-size='9.5' fill='#5a5a5a'>{sub}</text></g>")
+
+    def arrow(x1, x2, y=45):
+        return (f"<line x1='{x1}' y1='{y}' x2='{x2}' y2='{y}' stroke='#0a0a0a' stroke-width='1.5'/>"
+                f"<polygon points='{x2},{y} {x2-7},{y-3.5} {x2-7},{y+3.5}' fill='#0a0a0a'/>")
+
+    diagram = f"""
+    <svg viewBox='0 0 950 130' style='width:100%;max-width:950px' xmlns='http://www.w3.org/2000/svg'>
+      {box(10, 'ENTRADA', 'Telegram · Webhook', True)}
+      {arrow(160, 188)}
+      {box(188, 'GATEWAY', 'puente de mensajes', gw == 'active')}
+      {arrow(338, 366)}
+      {box(366, 'AGENTE', 'razona + ejecuta', True)}
+      {arrow(516, 544, 36)}
+      {arrow(516, 544, 80)}
+      {box(544, 'MODELO', 'DeepSeek API', bal_num >= 2)}
+      {box(544, 'HERRAMIENTAS', 'term · web · cron · imgs', True)}
+      <text x='550' y='105' font-family='monospace' font-size='9' fill='#5a5a5a'>
+        saldo ${'%.2f' % bal_num} {'✅' if bal_num >= 2 else '⚠️'} · crons {fails_n}/{total_n} {'✅' if fails_n == 0 else '🔴'} · túnel {'ok' if tun_state == 'ok' else tun_state}</text>
+    </svg>"""
 
     maxc = max([a["count"] for a in act] or [1])
     bars = "".join(
@@ -616,7 +739,7 @@ def metrics_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/secrets'>Secretos</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/secrets'>Secretos</a><a href='/logs'>Logs</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       <div class='idx'>03 — MÉTRICAS</div>
       <h1 style='font-size:26px;margin-bottom:6px'>Métricas del sistema</h1>
@@ -632,15 +755,48 @@ def metrics_page():
       </div>
 
       <div class='card'>
+        <span class='idx'>DIAGRAMA DE EJECUCIÓN</span>
+        <h2>Cómo fluye un mensaje — estado en vivo</h2>
+        <div style='margin-top:16px'>{diagram}</div>
+        <p class='muted' style='margin-top:10px'>Cada punto indica salud en vivo: verde = ok, rojo = problema. El modelo se marca ⚠️ si el saldo baja de $2.</p>
+      </div>
+
+      <div class='card'>
         <span class='idx'>ACTIVIDAD</span>
-        <h2>Mensajes por día — últimos 14 días</h2>
-        <div class='bars'>{bars}</div>
+        <h2>Mensajes y sesiones por día — últimos 14 días</h2>
+        <canvas id='chActivity' height='110'></canvas>
       </div>
 
       <div class='card'>
         <span class='idx'>COSTO</span>
-        <h2>Costo por día — últimos 14 días</h2>
-        <div class='bars'>{cost_bars}</div>
+        <h2>Costo estimado por día (USD) — últimos 14 días</h2>
+        <canvas id='chCost' height='110'></canvas>
+      </div>
+
+      <div class='two-col'>
+        <div class='card'>
+          <span class='idx'>TOKENS</span>
+          <h2>Tokens in/out por día</h2>
+          <canvas id='chTokens' height='150'></canvas>
+        </div>
+        <div class='card'>
+          <span class='idx'>PLATAFORMAS</span>
+          <h2>Sesiones por origen</h2>
+          <canvas id='chPlats' height='150'></canvas>
+        </div>
+      </div>
+
+      <div class='two-col'>
+        <div class='card'>
+          <span class='idx'>HERRAMIENTAS</span>
+          <h2>Top 10 herramientas</h2>
+          <canvas id='chTools' height='170'></canvas>
+        </div>
+        <div class='card'>
+          <span class='idx'>MODELOS</span>
+          <h2>Costo por modelo (USD)</h2>
+          <canvas id='chModels' height='170'></canvas>
+        </div>
       </div>
 
       <div class='two-col'>
@@ -681,7 +837,114 @@ def metrics_page():
         <table><tr><th>Tool</th><th>Llamadas</th></tr>{tool_rows}</table>
       </div>
     </div>
+    <script src='https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'></script>
+    <script>
+    Chart.defaults.font.family = "'Inter',sans-serif";
+    Chart.defaults.font.size = 11;
+    Chart.defaults.color = '#5a5a5a';
+    const INK = '#0a0a0a', MUT = '#5a5a5a', LINE = '#e4e4e4';
+    const GREEN = '#15803d', RED = '#dc2626', AMBER = '#b45309', BLUE = '#2563eb';
+    function mk(id, cfg){{ const c = document.getElementById(id); if(!c || typeof Chart === 'undefined') return; new Chart(c, cfg); }}
+    mk('chActivity', {{
+      type:'line',
+      data:{{ labels:{ch_dates}, datasets:[
+        {{label:'Mensajes', data:{ch_msgs}, borderColor:INK, backgroundColor:'rgba(10,10,10,.08)', fill:true, tension:.3, pointRadius:2}},
+        {{label:'Sesiones', data:{ch_sess}, borderColor:BLUE, tension:.3, pointRadius:2}}
+      ]}},
+      options:{{ scales:{{ y:{{ beginAtZero:true, grid:{{color:LINE}} }}, x:{{ grid:{{display:false}} }} }} }}
+    }});
+    mk('chCost', {{
+      type:'bar',
+      data:{{ labels:{ch_dates}, datasets:[{{label:'USD', data:{ch_cost}, backgroundColor:AMBER, borderRadius:3}}] }},
+      options:{{ plugins:{{ legend:{{display:false}} }}, scales:{{ y:{{ beginAtZero:true, grid:{{color:LINE}} }}, x:{{ grid:{{display:false}} }} }} }}
+    }});
+    mk('chTokens', {{
+      type:'bar',
+      data:{{ labels:{ch_dates}, datasets:[
+        {{label:'Input', data:{ch_tin}, backgroundColor:'rgba(10,10,10,.75)', borderRadius:3}},
+        {{label:'Output', data:{ch_tout}, backgroundColor:'rgba(37,99,235,.75)', borderRadius:3}}
+      ]}},
+      options:{{ scales:{{ x:{{stacked:true, grid:{{display:false}} }}, y:{{stacked:true, beginAtZero:true, grid:{{color:LINE}}}} }} }}
+    }});
+    mk('chPlats', {{
+      type:'doughnut',
+      data:{{ labels:{ch_plats}, datasets:[{{data:{ch_plat_n}, backgroundColor:['#0a0a0a','#2563eb','#15803d','#b45309','#7c3aed','#dc2626','#0891b2'], borderWidth:0}}] }},
+      options:{{ plugins:{{ legend:{{position:'bottom'}} }} }}
+    }});
+    mk('chTools', {{
+      type:'bar',
+      data:{{ labels:{ch_tools}, datasets:[{{label:'Llamadas', data:{ch_tools_n}, backgroundColor:INK, borderRadius:3}}] }},
+      options:{{ indexAxis:'y', plugins:{{ legend:{{display:false}} }}, scales:{{ x:{{ beginAtZero:true, grid:{{color:LINE}} }}, y:{{ grid:{{display:false}} }} }} }}
+    }});
+    mk('chModels', {{
+      type:'bar',
+      data:{{ labels:{ch_models}, datasets:[{{label:'USD', data:{ch_models_n}, backgroundColor:RED, borderRadius:3}}] }},
+      options:{{ indexAxis:'y', plugins:{{ legend:{{display:false}} }}, scales:{{ x:{{ beginAtZero:true, grid:{{color:LINE}} }}, y:{{ grid:{{display:false}} }} }} }}
+    }});
+    </script>
     """
+
+
+@app.route("/logs")
+def logs_page():
+    if not cookie_ok():
+        return redirect("/login")
+    return BASE_CSS + """
+    <div class='wrap'>
+      <div class='top'>
+        <div class='brand'><a href='/dashboard'>DORSHA</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/logs'>Logs</a><a href='/secrets'>Secretos</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+      </div>
+      <div class='idx'>07 — LOGS</div>
+      <h1 style='font-size:26px;margin-bottom:6px'>Logs del gateway</h1>
+      <p class='muted' style='margin-bottom:22px'>Últimas líneas de ~/.hermes/logs/gateway.log — auto-refresh cada 10s.</p>
+      <div style='display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap'>
+        <span class='tag'>autorefresh</span>
+        <button class='ghost' type='button' onclick='refreshLog()'>⟳ Refrescar ahora</button>
+        <span class='muted' id='logmeta'></span>
+      </div>
+      <div class='card' style='padding:0;overflow:hidden'>
+        <pre id='logbox' style='margin:0;padding:16px;font-family:monospace;font-size:11.5px;line-height:1.6;max-height:70vh;overflow:auto;white-space:pre-wrap;word-break:break-word'></pre>
+      </div>
+    </div>
+    <script>
+    function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function paint(lines){
+      const box = document.getElementById('logbox');
+      box.innerHTML = lines.map(l => {
+        let c = '#5a5a5a';
+        if (/error|traceback|exception/i.test(l)) c = '#dc2626';
+        else if (/warn/i.test(l)) c = '#b45309';
+        else if (/info/i.test(l)) c = '#15803d';
+        else if (/http|POST|GET/i.test(l)) c = '#2563eb';
+        return `<div style='color:${c}'>${esc(l)}</div>`;
+      }).join('');
+    }
+    async function refreshLog(){
+      try{
+        const r = await fetch('/logs/api?n=400');
+        const d = await r.json();
+        paint(d.lines);
+        const meta = document.getElementById('logmeta');
+        meta.textContent = d.lines.length + ' líneas · ' + new Date().toLocaleTimeString();
+      }catch(e){ document.getElementById('logbox').textContent = '❌ no pude leer el log'; }
+    }
+    refreshLog();
+    setInterval(refreshLog, 10000);
+    </script>
+    """
+
+
+@app.route("/logs/api")
+def logs_api():
+    if not cookie_ok():
+        abort(403)
+    try:
+        n = min(int(request.args.get("n", "400")), 2000)
+    except (TypeError, ValueError):
+        n = 400
+    lines = _tail_log(n)
+    return {"lines": lines}
 
 
 # ---------- CRONS (gestión desde el panel) ----------
@@ -725,7 +988,7 @@ def crons_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/metrics'>Métricas</a><a href='/secrets'>Secretos</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/metrics'>Métricas</a><a href='/secrets'>Secretos</a><a href='/logs'>Logs</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       {('<p class="visitor-banner">👁 <b>Modo visitante</b> — solo lectura.</p>' if is_visitor else '')}
       <div class='idx'>02 — AUTOMATIZACIONES</div>
@@ -806,6 +1069,21 @@ def _admin_only():
     return None
 
 
+def _require_master(form):
+    """Valida la master password del vault para acciones destructivas.
+    Devuelve None si OK, o (html_error, 403) si falta el vault o la password no coincide."""
+    if not db.password_is_set():
+        return (BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div>"
+                "<h1>🔐 Vault requerido</h1><p class='muted'>Primero configura la master password en "
+                "<a href='/secrets'>Secretos</a>. Las acciones destructivas la exigen.</p></div>", 403)
+    if not db.check_password((form or {}).get("master_pw", "")):
+        db.log_system_event("VAULT_FAIL", "Master password incorrecta en acción sensible", SUPER_ADMIN)
+        return (BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div>"
+                "<h1>🔒 Master password incorrecta</h1>"
+                "<p class='muted'>Acción cancelada. <a href='/dashboard'>← Panel</a></p></div>", 403)
+    return None
+
+
 @app.route("/keys")
 def keys_page():
     denied = _admin_only()
@@ -824,11 +1102,11 @@ def keys_page():
             <span class='muted' style='font-family:monospace;font-size:12px'>{escape(k['masked'])}</span></div>
             <div style='display:flex;flex-direction:column;gap:8px;align-items:flex-end'>
             <div class='btnrow'>{test_btn}
-            <form method='post' action='/keys/env/delete' onsubmit="return confirm('¿Borrar {escape(k['name'])}?')">
+            <form method='post' action='/keys/env/delete' onsubmit="return confirm('¿Borrar {escape(k['name'])}?') && withMaster(this)">
               <input type='hidden' name='name' value='{escape(k['name'])}'>
               <button class='danger' type='submit'>Borrar</button>
             </form></div>
-            <form method='post' action='/keys/env/save' style='display:flex;gap:8px'>
+            <form method='post' action='/keys/env/save' style='display:flex;gap:8px' onsubmit="return withMaster(this)">
               <input type='hidden' name='name' value='{escape(k['name'])}'>
               <input type='text' name='value' placeholder='nuevo valor…' style='margin:0;padding:7px 10px;width:260px'>
               <button class='ghost' type='submit'>Guardar</button>
@@ -848,7 +1126,7 @@ def keys_page():
                 <span class='muted'>{escape(c['masked'])}{' · ' + escape(c['base_url']) if c['base_url'] else ''}</span><br>{err}</div>
                 <div class='btnrow'>
                 <button class='ghost' type='button' onclick="testKey('pool','{c['id']}',this)">Test</button>
-                <form method='post' action='/keys/pool/remove' onsubmit="return confirm('¿Quitar {escape(c['label'])} del pool?')">
+                <form method='post' action='/keys/pool/remove' onsubmit="return confirm('¿Quitar {escape(c['label'])} del pool?') && withMaster(this)">
                   <input type='hidden' name='provider' value='{escape(p['provider'])}'>
                   <input type='hidden' name='id' value='{c['id']}'>
                   <button class='danger' type='submit'>Quitar</button>
@@ -859,7 +1137,7 @@ def keys_page():
             <span class='idx'>POOL</span>
             <h2>{escape(p['provider'])} · {p['count']} credenciales</h2>
             {cred_rows}
-            <form method='post' action='/keys/pool/add' style='display:flex;gap:8px;margin-top:16px;flex-wrap:wrap'>
+            <form method='post' action='/keys/pool/add' style='display:flex;gap:8px;margin-top:16px;flex-wrap:wrap' onsubmit="return withMaster(this)">
               <input type='hidden' name='provider' value='{escape(p['provider'])}'>
               <input type='text' name='label' placeholder='etiqueta (ej: key-extra-1)' style='margin:0;padding:7px 10px;flex:1;min-width:160px'>
               <input type='text' name='api_key' placeholder='sk-…' style='margin:0;padding:7px 10px;flex:2;min-width:220px'>
@@ -888,7 +1166,7 @@ def keys_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/metrics'>Métricas</a><a href='/secrets'>Secretos</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/metrics'>Métricas</a><a href='/secrets'>Secretos</a><a href='/logs'>Logs</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       <div class='idx'>05 — CLAVES</div>
       <h1 style='font-size:26px;margin-bottom:6px'>Gestor de API keys</h1>
@@ -927,6 +1205,14 @@ def keys_page():
         btn.style.borderColor = d.ok ? '#15803d' : '#dc2626';
       }}catch(e){{ btn.textContent='❌ err'; }}
     }}
+    function withMaster(form){{
+      const pw = prompt('🔐 Master password (vault):');
+      if(pw === null) return false;
+      let inp = form.querySelector('input[name="master_pw"]');
+      if(!inp){{ inp = document.createElement('input'); inp.type='hidden'; inp.name='master_pw'; form.appendChild(inp); }}
+      inp.value = pw;
+      return true;
+    }}
     </script>
     """
 
@@ -959,6 +1245,9 @@ def keys_test():
 def keys_env_save():
     if current_role() != "admin":
         abort(403)
+    denied = _require_master(request.form)
+    if denied:
+        return denied
     name = request.form.get("name", "").strip()
     value = request.form.get("value", "").strip()
     if name and value:
@@ -971,6 +1260,9 @@ def keys_env_save():
 def keys_env_delete():
     if current_role() != "admin":
         abort(403)
+    denied = _require_master(request.form)
+    if denied:
+        return denied
     name = request.form.get("name", "").strip()
     if name:
         km.delete_env_key(name)
@@ -982,6 +1274,9 @@ def keys_env_delete():
 def keys_pool_add():
     if current_role() != "admin":
         abort(403)
+    denied = _require_master(request.form)
+    if denied:
+        return denied
     provider = request.form.get("provider", "").strip()
     label = request.form.get("label", "").strip() or "key-extra"
     api_key = request.form.get("api_key", "").strip()
@@ -995,6 +1290,9 @@ def keys_pool_add():
 def keys_pool_remove():
     if current_role() != "admin":
         abort(403)
+    denied = _require_master(request.form)
+    if denied:
+        return denied
     provider = request.form.get("provider", "").strip()
     cid = request.form.get("id", "").strip()
     if provider and cid:
@@ -1169,7 +1467,7 @@ def secrets_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/secrets'>Secretos</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/secrets'>Secretos</a><a href='/crons'>Crons</a><a href='/keys'>Claves</a><a href='/logs'>Logs</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       <div class='idx'>06 — SECRETOS</div>
       <h1 style='font-size:26px;margin-bottom:6px'>Vault de secretos</h1>
@@ -1189,6 +1487,15 @@ def secrets_page():
         <h2 style='font-family:monospace;font-size:14px;word-break:break-all'>{escape(cur['path'])}</h2>
         <input type='text' id='filter' placeholder='Filtrar variables… (escribe el nombre)' style='margin:14px 0 8px' oninput='filterRows(this.value)'>
         {rows}
+      </div>
+
+      <div class='card'>
+        <span class='idx'>BACKUP</span>
+        <h2>Backup cifrado descargable</h2>
+        <p class='muted' style='margin:10px 0 16px'>Genera un .zip con los .env de <b>todos los perfiles</b>, la BD del panel y los crons — todo cifrado <b>AES-256</b> con tu master password (pide la password de nuevo para confirmar). Restaurar: instrucciones dentro del zip.</p>
+        <form method='post' action='/secrets/backup' onsubmit="return withMaster(this)">
+          <button type='submit'>📦 Descargar backup cifrado</button>
+        </form>
       </div>
     </div>
     <script>
@@ -1231,6 +1538,14 @@ def secrets_page():
       document.querySelectorAll('.row[data-key]').forEach(r => {{
         r.style.display = r.dataset.key.toLowerCase().includes(q) ? '' : 'none';
       }});
+    }}
+    function withMaster(form){{
+      const pw = prompt('🔐 Master password (vault):');
+      if(pw === null) return false;
+      let inp = form.querySelector('input[name="master_pw"]');
+      if(!inp){{ inp = document.createElement('input'); inp.type='hidden'; inp.name='master_pw'; form.appendChild(inp); }}
+      inp.value = pw;
+      return true;
     }}
     </script>
     """
@@ -1294,6 +1609,82 @@ def secrets_lock():
     _vault_lock(token)
     db.log_system_event("VAULT_LOCK", "Vault bloqueado manualmente", SUPER_ADMIN)
     return redirect("/secrets")
+
+
+@app.route("/secrets/backup", methods=["POST"])
+def secrets_backup():
+    """Backup descargable: .env (todos los perfiles) + admin_panel.db + crons,
+    TODO cifrado AES-256-CBC con la master password del vault (openssl)."""
+    if current_role() != "admin":
+        abort(403)
+    token = request.cookies.get("session")
+    if not _vault_unlocked(token):
+        return {"ok": False, "detail": "Vault bloqueado"}, 403
+    pw = (request.form.get("master_pw") or "").strip()
+    if not db.check_password(pw):
+        db.log_system_event("VAULT_FAIL", "Backup denegado: master password incorrecta", SUPER_ADMIN)
+        return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div>" \
+               "<h1>🔒 Master password incorrecta</h1><p class='muted'>El backup se cancela. " \
+               "<a href='/secrets'>← Secretos</a></p></div>", 403
+
+    def enc(data: bytes, name: str) -> bytes:
+        with tempfile.NamedTemporaryFile("w", delete=False) as pf:
+            pf.write(pw)
+            pw_path = pf.name
+        try:
+            p = subprocess.run(
+                ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "100000",
+                 "-salt", "-pass", f"file:{pw_path}"],
+                input=data, capture_output=True, timeout=60)
+            if p.returncode != 0:
+                raise RuntimeError(p.stderr.decode()[:200])
+            return p.stdout
+        finally:
+            os.unlink(pw_path)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in _env_files():
+            if os.path.exists(f["path"]):
+                raw = open(f["path"], "rb").read()
+                z.writestr(f"env-{f['id']}.enc", enc(raw, f["id"]))
+        # BD del panel (copia consistente vía sqlite backup API)
+        tmp_db = tempfile.mktemp(suffix=".db")
+        try:
+            src = db.get_conn()
+            dst = sqlite3.connect(tmp_db)
+            with dst:
+                src.backup(dst)
+            dst.close()
+            src.close()
+            z.writestr("admin-panel.db.enc", enc(open(tmp_db, "rb").read(), "db"))
+        finally:
+            if os.path.exists(tmp_db):
+                os.unlink(tmp_db)
+        # crons
+        if os.path.exists(CRON_JOBS_PATH):
+            z.writestr("cron-jobs.json.enc", enc(open(CRON_JOBS_PATH, "rb").read(), "crons"))
+        z.writestr("README.txt", (
+            "BACKUP DORSHA — descargado desde el panel admin\n"
+            "================================================\n"
+            "Todo está cifrado AES-256-CBC (PBKDF2 100k iteraciones) con la\n"
+            "master password del vault.\n\n"
+            "Restaurar un archivo:\n"
+            "  openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\\n"
+            "    -in env-default.enc -out .env -pass pass:'TU_MASTER_PASSWORD'\n\n"
+            "Restaurar la BD del panel:\n"
+            "  1) openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\\n"
+            "       -in admin-panel.db.enc -out admin_panel.db -pass pass:'TU_MASTER_PASSWORD'\n"
+            "  2) systemctl --user stop admin-panel\n"
+            "  3) cp admin_panel.db ~/.hermes/admin_panel/admin_panel.db\n"
+            "  4) systemctl --user start admin-panel\n\n"
+            "No compartas este archivo: contiene credenciales cifradas.\n"
+        ))
+    buf.seek(0)
+    db.log_system_event("VAULT_BACKUP", "Backup cifrado descargado", SUPER_ADMIN)
+    fname = "dorsha-backup-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".zip"
+    from flask import send_file
+    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=fname)
 
 
 @app.route("/secrets/reveal", methods=["POST"])
