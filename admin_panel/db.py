@@ -35,7 +35,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY,
         created_at TEXT,
-        expires_at TEXT
+        expires_at TEXT,
+        role TEXT DEFAULT 'admin'
     );
     CREATE TABLE IF NOT EXISTS message_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +59,10 @@ def init_db():
         created_at TEXT
     );
     """)
+    # migración: columna role en sessions (bases antiguas)
+    cols = [c[1] for c in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+    if "role" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN role TEXT DEFAULT 'admin'")
     conn.commit()
     conn.close()
 
@@ -100,15 +105,23 @@ def check_password(password: str) -> bool:
     return verify_password(password, row["password_hash"])
 
 # --- sessions ---
-def create_session() -> str:
+def create_session(role: str = "admin") -> str:
     token = secrets.token_urlsafe(32)
     conn = get_conn()
     now = datetime.utcnow()
-    conn.execute("INSERT INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)",
-                 (token, now.isoformat(), (now + timedelta(hours=12)).isoformat()))
+    conn.execute("INSERT INTO sessions (token, created_at, expires_at, role) VALUES (?, ?, ?, ?)",
+                 (token, now.isoformat(), (now + timedelta(hours=12)).isoformat(), role))
     conn.commit()
     conn.close()
     return token
+
+def session_role(token: str) -> str:
+    if not token:
+        return "admin"
+    conn = get_conn()
+    row = conn.execute("SELECT role FROM sessions WHERE token=?", (token,)).fetchone()
+    conn.close()
+    return (row["role"] if row and "role" in row.keys() else "admin") or "admin"
 
 def session_valid(token: str) -> bool:
     if not token:

@@ -8,6 +8,8 @@ import crypto from 'crypto';
 const privy = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);
 const TICKET_SECRET = process.env.PRIVY_TICKET_SECRET;
 const ALLOWED_EMAIL = process.env.PRIVY_ALLOWED_EMAIL;
+const VISITOR_EMAILS = (process.env.PRIVY_VISITOR_EMAILS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
 const GIST_API = 'https://api.github.com/gists/21a187027af69a8d8f4c5e19079e8d62';
 
 export default async function handler(req, res) {
@@ -20,7 +22,8 @@ export default async function handler(req, res) {
     const user = await privy.getUser(claims.userId);
     const email = (user.email && user.email.address) || null;
 
-    if (email !== ALLOWED_EMAIL) {
+    const role = email === ALLOWED_EMAIL ? 'admin' : (VISITOR_EMAILS.includes(email) ? 'visitor' : null);
+    if (!role) {
       return res.status(403).json({ error: 'not authorized', email });
     }
 
@@ -38,7 +41,7 @@ export default async function handler(req, res) {
       if (u.startsWith('https://')) panel = u;
     } catch (_) {}
 
-    res.json({ ticket, email, exp, panel });
+    res.json({ ticket, email, exp, panel, role });
   } catch (e) {
     res.status(401).json({ error: e.message || 'invalid token' });
   }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os, sys, re, json, subprocess, hashlib, hmac, time
 from datetime import datetime
+from html import escape
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import metrics as metrics_mod
@@ -78,6 +79,11 @@ tr:last-child td{border-bottom:none}
 .pill{display:inline-block;font-family:'Space Grotesk',sans-serif;font-size:12px;letter-spacing:.08em;text-transform:uppercase;padding:7px 16px;border:1px solid var(--line);margin-right:8px;color:var(--muted);text-decoration:none}
 .pill:hover{border-color:var(--ink)}
 .pill.on{border-color:var(--ink);color:var(--ink);background:#f5f5f5}
+.pill.ok{border-color:var(--ok);color:var(--ok)}
+.pill.bad{border-color:var(--danger);color:var(--danger)}
+.health{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:26px}
+.health .pill{padding:8px 14px;margin-right:0}
+.visitor-banner{border:1px solid var(--line);background:#fafafa;padding:12px 16px;font-size:13px;color:var(--muted);margin-bottom:24px}
 .badge{display:inline-block;font-family:'Space Grotesk',sans-serif;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;padding:6px 14px;border:1px solid var(--ok);color:var(--ok)}
 .badge.off{border-color:var(--danger);color:var(--danger)}
 .danger-btn{background:#fff;color:var(--danger);border-color:var(--danger)}
@@ -89,6 +95,13 @@ tr:last-child td{border-bottom:none}
 
 def cookie_ok():
     return db.session_valid(request.cookies.get("session"))
+
+def current_role():
+    return db.session_role(request.cookies.get("session"))
+
+def _visitor_emails():
+    raw = _env_value("PRIVY_VISITOR_EMAILS") or ""
+    return [x.strip() for x in raw.split(",") if x.strip()]
 
 def require_login():
     if not cookie_ok():
@@ -193,9 +206,11 @@ def auth_ticket():
     allowed = _env_value("PRIVY_ALLOWED_EMAIL")
     if not allowed:
         return BASE_CSS + "<div class='msg'><div class='bar'></div><div class='idx'>DORSHA · ADMIN</div><h1>❌ Email no configurado</h1><p class='muted'>Falta PRIVY_ALLOWED_EMAIL en ~/.hermes/.env</p></div>", 500
-    if m != allowed:
+    visitors = _visitor_emails()
+    if m != allowed and m not in visitors:
         abort(403)
-    token = db.create_session()
+    role = "admin" if m == allowed else "visitor"
+    token = db.create_session(role)
     resp = make_response(redirect("/dashboard"))
     resp.set_cookie("session", token, httponly=True, samesite="Lax", max_age=3600*12)
     return resp
@@ -248,6 +263,8 @@ def dashboard():
     users = db.list_users()
     env_allowed = set(get_env_allowed())
     actions = db.list_pending_actions()
+    role = current_role()
+    is_visitor = role != "admin"
 
     rows = ""
     for u in users:
@@ -255,7 +272,7 @@ def dashboard():
         is_admin = cid == SUPER_ADMIN
         blocked = cid not in env_allowed
         tag = f"<span class='tag blocked'>BLOQUEADO</span>" if blocked else "<span class='tag active'>activo</span>"
-        btn = "" if is_admin else (
+        btn = "" if (is_admin or is_visitor) else (
             f"<button class='ghost' onclick=\"act('/users/{cid}/unblock')\">Desbloquear</button>"
             if blocked else
             f"<button class='danger' onclick=\"act('/users/{cid}/block')\">Bloquear</button>"
@@ -265,14 +282,14 @@ def dashboard():
 
     act_rows = ""
     for a in actions:
+        act_btns = "" if is_visitor else (
+            f"<div class='btnrow'><button onclick=\"act('/actions/{a['id']}/approve')\">Aprobar</button>"
+            f"<button class='danger' onclick=\"act('/actions/{a['id']}/deny')\">Negar</button></div>")
         act_rows += f"""<div class='row'><div>
             <b>{a['chat_name'] or a['chat_id']}</b> pidió:<br>
             <span class='muted'>{a['action_desc']}</span><br>
             <span class='muted'>expira: {a['expires_at'][:16]}</span>
-            </div><div class='btnrow'>
-            <button onclick="act('/actions/{a['id']}/approve')">Aprobar</button>
-            <button class='danger' onclick="act('/actions/{a['id']}/deny')">Negar</button>
-            </div></div>"""
+            </div>{act_btns}</div>"""
     if not act_rows:
         act_rows = "<p class='muted'>No hay acciones pendientes.</p>"
 
@@ -303,7 +320,16 @@ def dashboard():
             for e in events) or "<p class='muted'>Sin eventos registrados.</p>"
         badge = ("<span class='badge off'>⛔ APAGADO</span>"
                  if off else f"<span class='badge'>● ACTIVO · gateway {gw}</span>")
-        system_card = f"""
+        if is_visitor:
+            system_card = f"""
+      <div class='card'>
+        <span class='idx'>04 — SISTEMA</span>
+        <h2>Kill switch</h2>
+        <div style='margin:14px 0 18px'>{badge}</div>
+        <p class='muted'>Modo visitante: solo lectura. Contacta al administrador para apagar/reactivar.</p>
+      </div>"""
+        else:
+            system_card = f"""
       <div class='card'>
         <span class='idx'>04 — SISTEMA</span>
         <h2>Kill switch</h2>
@@ -321,12 +347,38 @@ def dashboard():
     except Exception:
         system_card = ""
 
+    # ---- SEMÁFORO DE SALUD ----
+    try:
+        gw = metrics_mod.gateway_status()
+        tun_state, tun_url = metrics_mod.tunnel_status()
+        bal, bal_status = metrics_mod.balance()
+        bal_num = 0.0
+        m = re.search(r"[\d.]+", bal or "")
+        if m:
+            bal_num = float(m.group(0))
+        fails_n, total_n = metrics_mod.cron_failures()
+
+        def hpill(label, ok):
+            return f"<span class='pill {'ok' if ok else 'bad'}'>{label}</span>"
+        health = ("<div class='health'>"
+                  + hpill("Gateway " + ("🟢" if gw == "active" else "🔴 " + gw), gw == "active")
+                  + hpill("Túnel " + ("🟢" if tun_state == "ok" else "🔴 " + tun_state), tun_state == "ok")
+                  + hpill("Saldo $" + (f"{bal_num:.2f}" if bal_num else "?") + (" ⚠️" if bal_num < 2 else " ✅"), bal_num >= 2)
+                  + hpill(f"Crons {fails_n}/{total_n}" + ("" if fails_n == 0 else " 🔴"), fails_n == 0)
+                  + "</div>")
+    except Exception:
+        health = ""
+
     return BASE_CSS + f"""
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/crons'>Crons</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
+
+      {('<p class="visitor-banner">👁 <b>Modo visitante</b> — solo lectura: puedes ver todo, pero no modificar nada.</p>' if is_visitor else '')}
+
+      {health}
 
       <div class='card'>
         <span class='idx'>01 — PENDIENTES</span>
@@ -355,6 +407,8 @@ def dashboard():
 def block_user(chat_id):
     if not cookie_ok():
         abort(403)
+    if current_role() != "admin":
+        abort(403)
     if chat_id == SUPER_ADMIN:
         abort(400)
     ids = [i for i in get_env_allowed() if i != chat_id]
@@ -366,6 +420,8 @@ def block_user(chat_id):
 @app.route("/users/<chat_id>/unblock", methods=["POST"])
 def unblock_user(chat_id):
     if not cookie_ok():
+        abort(403)
+    if current_role() != "admin":
         abort(403)
     ids = get_env_allowed()
     if chat_id not in ids:
@@ -379,12 +435,16 @@ def unblock_user(chat_id):
 def approve_action(aid):
     if not cookie_ok():
         abort(403)
+    if current_role() != "admin":
+        abort(403)
     db.resolve_action(aid, "approved")
     return {"ok": True}
 
 @app.route("/actions/<aid>/deny", methods=["POST"])
 def deny_action(aid):
     if not cookie_ok():
+        abort(403)
+    if current_role() != "admin":
         abort(403)
     db.resolve_action(aid, "denied")
     return {"ok": True}
@@ -490,6 +550,8 @@ def _cron_restore():
 def system_off():
     if not cookie_ok():
         abort(403)
+    if current_role() != "admin":
+        abort(403)
     try:
         _cron_pause_all()
     except Exception as e:
@@ -503,6 +565,8 @@ def system_off():
 @app.route("/system/on", methods=["POST"])
 def system_on():
     if not cookie_ok():
+        abort(403)
+    if current_role() != "admin":
         abort(403)
     try:
         _cron_restore()
@@ -541,6 +605,7 @@ def metrics_page():
     cron_fails, cron_total = metrics_mod.cron_failures()
     gw_err = metrics_mod.gateway_errors()
     act = metrics_mod.activity(14)
+    cd = metrics_mod.cost_by_day(14)
     models = metrics_mod.models()
     plats = metrics_mod.platforms()
     tools = metrics_mod.top_tools(10)
@@ -550,6 +615,12 @@ def metrics_page():
         f"<div class='bar' style='height:{max(4, int(a['count']/maxc*100))}%'>"
         f"<span class='bt'>{a['count']}</span><span class='bd'>{a['date'][5:]}</span></div>"
         for a in act) or "<p class='muted'>Sin actividad.</p>"
+
+    maxcost = max([c["cost"] for c in cd] or [0.01])
+    cost_bars = "".join(
+        f"<div class='bar' style='height:{max(4, int(c['cost']/maxcost*100))}%'>"
+        f"<span class='bt'>${c['cost']}</span><span class='bd'>{c['date'][5:]}</span></div>"
+        for c in cd)
 
     spend_rows = "".join(
         f"<tr><td>{s['user']}</td><td class='muted'>{s['chat_id']}</td><td>{s['sessions']}</td>"
@@ -579,7 +650,7 @@ def metrics_page():
     <div class='wrap'>
       <div class='top'>
         <div class='brand'><a href='/dashboard'>DORSHA</a></div>
-        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/crons'>Crons</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
       </div>
       <div class='idx'>03 — MÉTRICAS</div>
       <h1 style='font-size:26px;margin-bottom:6px'>Métricas del sistema</h1>
@@ -598,6 +669,12 @@ def metrics_page():
         <span class='idx'>ACTIVIDAD</span>
         <h2>Mensajes por día — últimos 14 días</h2>
         <div class='bars'>{bars}</div>
+      </div>
+
+      <div class='card'>
+        <span class='idx'>COSTO</span>
+        <h2>Costo por día — últimos 14 días</h2>
+        <div class='bars'>{cost_bars}</div>
       </div>
 
       <div class='two-col'>
@@ -639,6 +716,119 @@ def metrics_page():
       </div>
     </div>
     """
+
+
+# ---------- CRONS (gestión desde el panel) ----------
+def _load_crons():
+    return json.load(open(CRON_JOBS_PATH))
+
+
+def _save_crons(d):
+    json.dump(d, open(CRON_JOBS_PATH, "w"), indent=2, ensure_ascii=False)
+
+
+@app.route("/crons")
+def crons_page():
+    if not cookie_ok():
+        return redirect("/login")
+    is_visitor = current_role() != "admin"
+    d = _load_crons()
+    jobs = d.get("jobs", [])
+    rows = ""
+    for j in sorted(jobs, key=lambda x: (not x.get("enabled"), (x.get("name") or "").lower())):
+        jid = j.get("id")
+        name = j.get("name") or jid or "?"
+        sched = (j.get("schedule") or {}).get("display") or j.get("schedule_display") or "-"
+        last_run = (j.get("last_run_at") or "-")[:16]
+        status = j.get("last_status") or "-"
+        st_badge = ("<span class='badge'>scheduled</span>" if j.get("enabled")
+                    else "<span class='badge off'>paused</span>")
+        status_html = (f"<span class='pill {'ok' if status == 'ok' else 'bad'}'>"
+                       + escape(status) + "</span>" if status != "-" else "<span class='muted'>-</span>")
+        toggle_btn = "" if is_visitor else (
+            f"<form method='post' action='/crons/{jid}/toggle'><button class='ghost' type='submit'>"
+            + ("⏸ Pausar" if j.get("enabled") else "▶ Reanudar") + "</button></form>")
+        run_btn = "" if is_visitor else f"<form method='post' action='/crons/{jid}/run'><button type='submit'>Ejecutar</button></form>"
+        out_btn = f"<a href='/crons/{jid}/output'><button class='ghost' type='button'>Log</button></a>"
+        rows += (f"<div class='row'><div style='min-width:0'><b>{escape(name)}</b><br>"
+                 f"<span class='muted'>{escape(sched)} · último: {escape(last_run)}</span></div>"
+                 f"<div class='btnrow'>{st_badge}{status_html}{toggle_btn}{run_btn}{out_btn}</div></div>")
+    if not rows:
+        rows = "<p class='muted'>Sin jobs.</p>"
+    return BASE_CSS + f"""
+    <div class='wrap'>
+      <div class='top'>
+        <div class='brand'><a href='/dashboard'>DORSHA</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/metrics'>Métricas</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+      </div>
+      {('<p class="visitor-banner">👁 <b>Modo visitante</b> — solo lectura.</p>' if is_visitor else '')}
+      <div class='idx'>02 — AUTOMATIZACIONES</div>
+      <h1 style='font-size:26px;margin-bottom:6px'>Crons</h1>
+      <p class='muted' style='margin-bottom:22px'>{len(jobs)} jobs · pausar, reanudar, ejecutar y ver logs</p>
+      <div class='card'>{rows}</div>
+    </div>"""
+
+
+@app.route("/crons/<jid>/toggle", methods=["POST"])
+def cron_toggle(jid):
+    if not cookie_ok():
+        abort(403)
+    if current_role() != "admin":
+        abort(403)
+    d = _load_crons()
+    for j in d.get("jobs", []):
+        if j.get("id") == jid:
+            en = not j.get("enabled")
+            j["enabled"] = en
+            j["state"] = "scheduled" if en else "paused"
+            if en:
+                j["paused_at"] = None
+                j["paused_reason"] = None
+            else:
+                j["paused_at"] = datetime.now().isoformat()
+                j["paused_reason"] = "admin panel"
+            db.log_system_event("CRON_TOGGLE", f"{j.get('name')}: {'reanudado' if en else 'pausado'}", SUPER_ADMIN)
+    _save_crons(d)
+    return redirect("/crons")
+
+
+@app.route("/crons/<jid>/run", methods=["POST"])
+def cron_run(jid):
+    if not cookie_ok():
+        abort(403)
+    if current_role() != "admin":
+        abort(403)
+    d = _load_crons()
+    for j in d.get("jobs", []):
+        if j.get("id") == jid and j.get("enabled"):
+            j["fire_claim"] = {"at": datetime.now().isoformat(), "by": "admin-panel"}
+            db.log_system_event("CRON_RUN", f"Ejecución forzada: {j.get('name')}", SUPER_ADMIN)
+    _save_crons(d)
+    return redirect("/crons")
+
+
+@app.route("/crons/<jid>/output")
+def cron_output(jid):
+    if not cookie_ok():
+        return redirect("/login")
+    path = os.path.expanduser(f"~/.hermes/cron/output/{jid}")
+    try:
+        content = open(path, encoding="utf-8", errors="replace").read()
+        lines = content.splitlines()[-80:]
+        body = "<br>".join(escape(l) for l in lines) or "<span class='muted'>Sin output.</span>"
+    except Exception:
+        body = "<span class='muted'>Sin archivo de output.</span>"
+    return BASE_CSS + f"""
+    <div class='wrap'>
+      <div class='top'>
+        <div class='brand'><a href='/dashboard'>DORSHA</a></div>
+        <div class='nav'><a href='/crons'>← Crons</a><a href='/logout'>Salir</a></div>
+      </div>
+      <div class='idx'>LOG DE CRON</div>
+      <h1 style='font-size:26px;margin-bottom:6px'>Últimas 80 líneas</h1>
+      <p class='muted' style='margin-bottom:22px'>{escape(jid)}</p>
+      <div class='card' style='font-family:monospace;font-size:12px;white-space:pre-wrap;line-height:1.5'>{body}</div>
+    </div>"""
 
 
 if __name__ == "__main__":

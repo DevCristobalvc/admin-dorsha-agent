@@ -6,7 +6,9 @@ plataformas y herramientas.
 """
 import os
 import re
+import sys
 import json
+import subprocess
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -256,3 +258,68 @@ def top_tools(limit=10):
         "GROUP BY tool_name ORDER BY n DESC LIMIT ?", (limit,)).fetchall()
     conn.close()
     return [{"tool": r["tool_name"], "calls": r["n"]} for r in rows]
+
+
+# ---------- SALUD DEL SISTEMA ----------
+
+def gateway_status():
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-active", "hermes-gateway.service"],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def tunnel_status():
+    """Estado del túnel del panel: (estado, url)."""
+    try:
+        last = open(os.path.expanduser("~/.hermes/admin_panel/.last_url")).read().strip()
+        if not last.startswith("https://"):
+            return "no_url", ""
+        r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-m", "8",
+                            last + "/login"], capture_output=True, text=True, timeout=15)
+        code = r.stdout.strip()
+        return ("ok" if code in ("200", "302", "401") else f"http_{code}"), last
+    except Exception:
+        return "error", ""
+
+
+def balance():
+    """Saldo DeepSeek: (balance_str, status)."""
+    try:
+        out = subprocess.run([sys.executable, os.path.expanduser("~/.hermes/scripts/balance_check.py"),
+                              "--json"], capture_output=True, text=True, timeout=40)
+        data = json.loads(out.stdout or "[]")
+        for d in data:
+            if d.get("api") == "DeepSeek":
+                return d.get("balance"), d.get("status", "ok")
+        return "?", "unknown"
+    except Exception:
+        return "?", "error"
+
+
+def cost_by_day(days=14):
+    """Costo estimado por día (últimos N días), con fallback de precios."""
+    conn = _state_conn()
+    rows = conn.execute(
+        "SELECT session_id, model, input_tokens, output_tokens, cache_read_tokens, "
+        "estimated_cost_usd FROM session_model_usage").fetchall()
+    conn.close()
+    per_day = {}
+    for r in rows:
+        d = _sid_date(r["session_id"])
+        if not d:
+            continue
+        date = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        cost = r["estimated_cost_usd"] or 0
+        rates = FALLBACK_RATES.get(r["model"])
+        if rates and not cost:
+            cost = (r["input_tokens"] * rates["input"] + r["output_tokens"] * rates["output"]
+                    + r["cache_read_tokens"] * rates["cache_read"]) / 1_000_000
+        per_day[date] = per_day.get(date, 0.0) + cost
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
+        out.append({"date": d, "cost": round(per_day.get(d, 0.0), 4)})
+    return out
