@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import os, sys, re, json, subprocess, hashlib, hmac, time
+from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import metrics as metrics_mod
 
 from flask import Flask, request, redirect, make_response, abort
 
@@ -61,6 +63,27 @@ a{color:var(--ink)}
 .msg h1{font-size:20px;margin-bottom:12px}
 .bar{height:3px;background:var(--ink);width:56px;margin-bottom:26px}
 .btnrow{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin-bottom:26px}
+.mcard{border:1px solid var(--line);padding:18px 16px}
+.mcard .v{font-family:'Space Grotesk',sans-serif;font-size:23px;font-weight:500;letter-spacing:-.02em}
+.mcard .l{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:8px 10px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:none}
+.bars{display:flex;align-items:flex-end;gap:5px;height:110px;margin-top:12px}
+.bar{flex:1;background:var(--ink);min-width:6px;position:relative}
+.bar .bt{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);font-size:9.5px;color:var(--muted);white-space:nowrap}
+.bar .bd{position:absolute;top:100%;left:50%;transform:translateX(-50%);font-size:9.5px;color:var(--muted);white-space:nowrap;margin-top:4px}
+.pill{display:inline-block;font-family:'Space Grotesk',sans-serif;font-size:12px;letter-spacing:.08em;text-transform:uppercase;padding:7px 16px;border:1px solid var(--line);margin-right:8px;color:var(--muted);text-decoration:none}
+.pill:hover{border-color:var(--ink)}
+.pill.on{border-color:var(--ink);color:var(--ink);background:#f5f5f5}
+.badge{display:inline-block;font-family:'Space Grotesk',sans-serif;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;padding:6px 14px;border:1px solid var(--ok);color:var(--ok)}
+.badge.off{border-color:var(--danger);color:var(--danger)}
+.danger-btn{background:#fff;color:var(--danger);border-color:var(--danger)}
+.danger-btn:hover{background:var(--danger);color:#fff}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+@media(max-width:720px){.two-col{grid-template-columns:1fr}}
 </style>
 """
 
@@ -253,6 +276,51 @@ def dashboard():
     if not act_rows:
         act_rows = "<p class='muted'>No hay acciones pendientes.</p>"
 
+    # ---- MÉTRICAS (mini, 7d) ----
+    try:
+        ov7 = metrics_mod.overview(7)
+        m_cards = "".join(
+            f"<div class='mcard'><div class='v'>{_fmt(ov7[k])}</div><div class='l'>{lbl}</div></div>"
+            for k, lbl in [("sessions", "Sesiones"), ("messages", "Mensajes"),
+                           ("total_tokens", "Tokens"), ("cost_usd", "Costo $")])
+        metrics_card = f"""
+      <div class='card'>
+        <span class='idx'>03 — MÉTRICAS</span>
+        <h2>Últimos 7 días</h2>
+        <div class='cards' style='margin:14px 0 6px'>{m_cards}</div>
+        <p style='margin-top:10px'><a href='/metrics'>Ver métricas completas →</a></p>
+      </div>"""
+    except Exception:
+        metrics_card = ""
+
+    # ---- SISTEMA / KILL SWITCH ----
+    try:
+        off, gw = system_status()
+        events = db.list_system_events(5)
+        ev_rows = "".join(
+            f"<div class='row'><div><b>{e['event']}</b><br><span class='muted'>{e['detail'][:70]}</span></div>"
+            f"<div class='muted'>{e['created_at'][11:19]}</div></div>"
+            for e in events) or "<p class='muted'>Sin eventos registrados.</p>"
+        badge = ("<span class='badge off'>⛔ APAGADO</span>"
+                 if off else f"<span class='badge'>● ACTIVO · gateway {gw}</span>")
+        system_card = f"""
+      <div class='card'>
+        <span class='idx'>04 — SISTEMA</span>
+        <h2>Kill switch</h2>
+        <div style='margin:14px 0 18px'>{badge}</div>
+        <div class='btnrow' style='justify-content:flex-start'>
+          <form method='post' action='/system/off' onsubmit="return confirm('¿Apagar TODO el sistema? El bot dejará de responder y los crons se pausan.')">
+            <button class='danger-btn' type='submit'>🛑 Apagar sistema</button>
+          </form>
+          <form method='post' action='/system/on'>
+            <button type='submit'>▶ Reactivar</button>
+          </form>
+        </div>
+        <div style='margin-top:18px'>{ev_rows}</div>
+      </div>"""
+    except Exception:
+        system_card = ""
+
     return BASE_CSS + f"""
     <div class='wrap'>
       <div class='top'>
@@ -271,6 +339,10 @@ def dashboard():
         <h2>Usuarios</h2>
         {rows}
       </div>
+
+      {metrics_card}
+
+      {system_card}
     </div>
     <script>
     function act(url) {{
@@ -372,6 +444,202 @@ def history():
       <div class='card'>{items}</div>
     </div>
     """
+
+# ---------- KILL SWITCH ----------
+EMERGENCY_FLAG = os.path.expanduser("~/.hermes/EMERGENCY_OFF")
+CRON_STATE_BACKUP = os.path.expanduser("~/.hermes/emergency_cron_backup.json")
+CRON_JOBS_PATH = os.path.expanduser("~/.hermes/cron/jobs.json")
+
+
+def system_status():
+    off = os.path.exists(EMERGENCY_FLAG)
+    gw = "inactive"
+    try:
+        gw = subprocess.run(["systemctl", "--user", "is-active", "hermes-gateway.service"],
+                            capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        pass
+    return off, gw
+
+
+def _cron_pause_all(backup=True):
+    d = json.load(open(CRON_JOBS_PATH))
+    if backup:
+        json.dump({j.get("id"): bool(j.get("enabled")) for j in d.get("jobs", [])},
+                  open(CRON_STATE_BACKUP, "w"))
+    for j in d.get("jobs", []):
+        j["enabled"] = False
+        j["state"] = "paused"
+    json.dump(d, open(CRON_JOBS_PATH, "w"), indent=2, ensure_ascii=False)
+
+
+def _cron_restore():
+    try:
+        backup = json.load(open(CRON_STATE_BACKUP))
+    except Exception:
+        backup = {}
+    d = json.load(open(CRON_JOBS_PATH))
+    for j in d.get("jobs", []):
+        en = backup.get(j.get("id"), True)
+        j["enabled"] = en
+        j["state"] = "scheduled" if en else "paused"
+    json.dump(d, open(CRON_JOBS_PATH, "w"), indent=2, ensure_ascii=False)
+
+
+@app.route("/system/off", methods=["POST"])
+def system_off():
+    if not cookie_ok():
+        abort(403)
+    try:
+        _cron_pause_all()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+    open(EMERGENCY_FLAG, "w").write(datetime.now().isoformat())
+    subprocess.run(["systemctl", "--user", "stop", "hermes-gateway.service"], timeout=20)
+    db.log_system_event("SYSTEM_OFF", "Kill switch: gateway detenido + crons pausados", SUPER_ADMIN)
+    return {"ok": True}
+
+
+@app.route("/system/on", methods=["POST"])
+def system_on():
+    if not cookie_ok():
+        abort(403)
+    try:
+        _cron_restore()
+    except Exception:
+        pass
+    if os.path.exists(EMERGENCY_FLAG):
+        os.remove(EMERGENCY_FLAG)
+    subprocess.run(["systemctl", "--user", "start", "hermes-gateway.service"], timeout=20)
+    db.log_system_event("SYSTEM_ON", "Sistema reactivado: gateway + crons restaurados", SUPER_ADMIN)
+    return {"ok": True}
+
+
+# ---------- MÉTRICAS ----------
+def _fmt(n):
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return "0"
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}k"
+    return str(n)
+
+
+@app.route("/metrics")
+def metrics_page():
+    if not cookie_ok():
+        return redirect("/login")
+    days_param = request.args.get("days", "7")
+    days = {"7": 7, "30": 30}.get(days_param)  # None = todo
+
+    ov = metrics_mod.overview(days)
+    spend = metrics_mod.spend_by_user(days)
+    errs = metrics_mod.errors_by_user(days)
+    cron_fails, cron_total = metrics_mod.cron_failures()
+    gw_err = metrics_mod.gateway_errors()
+    act = metrics_mod.activity(14)
+    models = metrics_mod.models()
+    plats = metrics_mod.platforms()
+    tools = metrics_mod.top_tools(10)
+
+    maxc = max([a["count"] for a in act] or [1])
+    bars = "".join(
+        f"<div class='bar' style='height:{max(4, int(a['count']/maxc*100))}%'>"
+        f"<span class='bt'>{a['count']}</span><span class='bd'>{a['date'][5:]}</span></div>"
+        for a in act) or "<p class='muted'>Sin actividad.</p>"
+
+    spend_rows = "".join(
+        f"<tr><td>{s['user']}</td><td class='muted'>{s['chat_id']}</td><td>{s['sessions']}</td>"
+        f"<td>{s['calls']}</td><td>{_fmt(s['tokens'])}</td><td>${s['cost']}</td></tr>"
+        for s in spend) or "<tr><td colspan='6' class='muted'>Sin datos</td></tr>"
+
+    err_rows = "".join(
+        f"<tr><td>{e['user']}</td><td>{e['errors']}</td></tr>" for e in errs) or "<tr><td colspan='2' class='muted'>Sin errores</td></tr>"
+
+    cron_rows = "".join(
+        f"<tr><td>{c['name']}</td><td class='muted'>{c['last_run']}</td><td class='muted'>{c['last_error']}</td></tr>"
+        for c in cron_fails) or "<tr><td colspan='3' class='muted'>Sin fallos recientes</td></tr>"
+
+    model_rows = "".join(
+        f"<tr><td>{m['model']}</td><td>{m['sessions']}</td><td>{_fmt(m['tokens'])}</td><td>${m['cost']}</td></tr>"
+        for m in models)
+    plat_rows = "".join(
+        f"<tr><td>{p['platform']}</td><td>{p['sessions']}</td></tr>" for p in plats)
+    tool_rows = "".join(
+        f"<tr><td>{t['tool']}</td><td>{t['calls']}</td></tr>" for t in tools)
+
+    period_tabs = "".join(
+        f"<a class='pill {'on' if days_param == k else ''}' href='/metrics?days={k}'>{lbl}</a>"
+        for k, lbl in [("7", "7 días"), ("30", "30 días"), ("all", "Todo")])
+
+    return BASE_CSS + f"""
+    <div class='wrap'>
+      <div class='top'>
+        <div class='brand'><a href='/dashboard'>DORSHA</a></div>
+        <div class='nav'><a href='/dashboard'>← Panel</a><a href='/history'>Historial</a><a href='/logout'>Salir</a></div>
+      </div>
+      <div class='idx'>03 — MÉTRICAS</div>
+      <h1 style='font-size:26px;margin-bottom:6px'>Métricas del sistema</h1>
+      <p class='muted' style='margin-bottom:22px'>Gasto por usuario · errores · actividad</p>
+      <div style='margin-bottom:24px'>{period_tabs}</div>
+
+      <div class='cards'>
+        <div class='mcard'><div class='v'>{ov['sessions']}</div><div class='l'>Sesiones</div></div>
+        <div class='mcard'><div class='v'>{_fmt(ov['messages'])}</div><div class='l'>Mensajes</div></div>
+        <div class='mcard'><div class='v'>{_fmt(ov['api_calls'])}</div><div class='l'>Llamadas API</div></div>
+        <div class='mcard'><div class='v'>{_fmt(ov['total_tokens'])}</div><div class='l'>Tokens</div></div>
+        <div class='mcard'><div class='v'>${ov['cost_usd']}</div><div class='l'>Costo est.</div></div>
+      </div>
+
+      <div class='card'>
+        <span class='idx'>ACTIVIDAD</span>
+        <h2>Mensajes por día — últimos 14 días</h2>
+        <div class='bars'>{bars}</div>
+      </div>
+
+      <div class='two-col'>
+        <div class='card'>
+          <span class='idx'>GASTO</span>
+          <h2>Por usuario</h2>
+          <table><tr><th>Usuario</th><th>ID</th><th>Ses.</th><th>Llam.</th><th>Tokens</th><th>Costo</th></tr>{spend_rows}</table>
+        </div>
+        <div class='card'>
+          <span class='idx'>ERRORES</span>
+          <h2>Tool-errors por usuario</h2>
+          <table><tr><th>Usuario</th><th>Errores</th></tr>{err_rows}</table>
+        </div>
+      </div>
+
+      <div class='card'>
+        <span class='idx'>AUTOMATIZACIONES</span>
+        <h2>Crons con fallo ({len(cron_fails)} de {cron_total}) · errores gateway 24h: {gw_err}</h2>
+        <table><tr><th>Job</th><th>Último run</th><th>Error</th></tr>{cron_rows}</table>
+      </div>
+
+      <div class='two-col'>
+        <div class='card'>
+          <span class='idx'>MODELOS</span>
+          <h2>Tokens por modelo</h2>
+          <table><tr><th>Modelo</th><th>Ses.</th><th>Tokens</th><th>Costo</th></tr>{model_rows}</table>
+        </div>
+        <div class='card'>
+          <span class='idx'>PLATAFORMAS</span>
+          <h2>Sesiones por origen</h2>
+          <table><tr><th>Plataforma</th><th>Sesiones</th></tr>{plat_rows}</table>
+        </div>
+      </div>
+
+      <div class='card'>
+        <span class='idx'>HERRAMIENTAS</span>
+        <h2>Top 10</h2>
+        <table><tr><th>Tool</th><th>Llamadas</th></tr>{tool_rows}</table>
+      </div>
+    </div>
+    """
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("ADMIN_PANEL_PORT", "5057"))

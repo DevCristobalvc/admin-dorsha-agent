@@ -50,6 +50,13 @@ def init_db():
         updated_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_ml_user ON message_log(user_id);
+    CREATE TABLE IF NOT EXISTS system_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event TEXT,
+        detail TEXT,
+        actor TEXT,
+        created_at TEXT
+    );
     """)
     conn.commit()
     conn.close()
@@ -181,7 +188,22 @@ def resolve_action(aid, status):
 
 def expire_stale_actions():
     conn = get_conn()
-    conn.execute("""UPDATE pending_actions SET status='expired'
-        WHERE status='pending' AND expires_at < ?""", (datetime.utcnow().isoformat(),))
+    conn.execute("UPDATE pending_actions SET status='expired', resolved_at=? WHERE status='pending' AND expires_at < ?",
+                 (datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
+
+# --- eventos del sistema (kill switch, etc.) ---
+def log_system_event(event, detail, actor):
+    conn = get_conn()
+    conn.execute("INSERT INTO system_events (event, detail, actor, created_at) VALUES (?,?,?,?)",
+                 (event, detail, actor, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+def list_system_events(limit=10):
+    conn = get_conn()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM system_events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
