@@ -42,3 +42,11 @@ admin-dorsha-agent/
 - La URL del panel (túnel Serveo) cambia; `notify_url_change.py` la publica en un gist (ID en el código) y avisa por Telegram.
 - El deploy de la landing: `vercel deploy --prod --yes --scope <team>` desde `landing/`.
 - Los allowed origins de la app Privy se actualizan vía `POST /api/v1/apps/{id}` (Basic auth appId:secret + header `privy-app-id`).
+
+## Funciones del panel
+- **Roles**: admin (todo) / visitante (solo lectura — `PRIVY_VISITOR_EMAILS` en .env)
+- **Semáforo de salud**: gateway, túnel, saldo DeepSeek, crons (dashboard)
+- **Crons**: pausar/reanudar/ejecutar/ver logs desde `/crons`
+- **Métricas**: gasto por usuario, errores, costo por día (`/metrics`)
+- **Kill switch**: apaga/reactiva gateway + crons (`/system/off`, `/system/on`)
+- **Alertas**: `scripts/health_watch.py` vía cron no_agent cada 30 min (silencio si OK)
