@@ -17,6 +17,30 @@ GATEWAY_LOG = os.path.expanduser("~/.hermes/logs/gateway.log")
 
 SID_DATE_RE = re.compile(r"(\d{8})")
 
+# Tarifas USD por millón de tokens para modelos sin pricing en Hermes
+# (deepseek-v4-flash no estaba en la tabla oficial; precios oficiales 2026-05)
+FALLBACK_RATES = {
+    "deepseek-v4-flash": {"input": 0.14, "output": 0.28, "cache_read": 0.0028},
+}
+
+
+def _fallback_cost(conn, in_clause=None, params=None):
+    """Costo adicional para modelos con estimated_cost_usd = 0 (sin pricing en Hermes)."""
+    q = ("SELECT model, COALESCE(SUM(input_tokens),0) i, COALESCE(SUM(output_tokens),0) o, "
+         "COALESCE(SUM(cache_read_tokens),0) cr, COALESCE(SUM(estimated_cost_usd),0) e "
+         "FROM session_model_usage")
+    if in_clause:
+        q += f" WHERE session_id IN {in_clause}"
+    q += " GROUP BY model"
+    rows = conn.execute(q, params or []).fetchall()
+    extra = 0.0
+    for r in rows:
+        rates = FALLBACK_RATES.get(r["model"])
+        if not rates or (r["e"] and r["e"] > 0):
+            continue
+        extra += (r["i"] * rates["input"] + r["o"] * rates["output"] + r["cr"] * rates["cache_read"]) / 1_000_000
+    return extra
+
 
 def _state_conn():
     conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
@@ -77,6 +101,8 @@ def overview(days=None):
             "COALESCE(SUM(output_tokens),0) o, COALESCE(SUM(estimated_cost_usd),0) e "
             "FROM session_model_usage").fetchone()
 
+    extra = _fallback_cost(conn, in_ if sid_cutoff else None, sessions if sid_cutoff else None)
+
     if ts_cutoff:
         n_messages = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE timestamp >= ?", (ts_cutoff,)).fetchone()[0]
@@ -90,54 +116,51 @@ def overview(days=None):
         "input_tokens": usage["i"],
         "output_tokens": usage["o"],
         "total_tokens": usage["i"] + usage["o"],
-        "cost_usd": round(usage["e"], 4),
+        "cost_usd": round(usage["e"] + extra, 4),
     }
 
 
 def spend_by_user(days=None):
-    """Ranking de gasto por usuario: sesiones, llamadas, tokens, costo."""
+    """Ranking de gasto por usuario: sesiones, llamadas, tokens, costo (con fallback)."""
     conn = _state_conn()
     sid_cutoff, _ = _cutoff_days(days)
     names = _user_names()
+    base = ("FROM session_model_usage u JOIN sessions s ON s.id = u.session_id")
+    cols = ("SELECT s.user_id, u.model, COUNT(DISTINCT s.id) ses, "
+            "COALESCE(SUM(u.api_call_count),0) calls, COALESCE(SUM(u.input_tokens),0) inp, "
+            "COALESCE(SUM(u.output_tokens),0) out, COALESCE(SUM(u.cache_read_tokens),0) cr, "
+            "COALESCE(SUM(u.estimated_cost_usd),0) e ")
+    if sid_cutoff:
+        keep = [s for s in (r[0] for r in conn.execute("SELECT id FROM sessions"))
+                if (_sid_date(s) or "") >= sid_cutoff]
+        in_ = "(" + ",".join("?" for _ in keep) + ")" if keep else "('')"
+        rows = conn.execute(f"{cols} {base} WHERE u.session_id IN {in_} GROUP BY s.user_id, u.model",
+                            keep).fetchall()
+    else:
+        rows = conn.execute(f"{cols} {base} GROUP BY s.user_id, u.model").fetchall()
 
-    rows = conn.execute(
-        "SELECT s.user_id, COUNT(DISTINCT s.id) ses, SUM(u.api_call_count) calls, "
-        "SUM(u.input_tokens) inp, SUM(u.output_tokens) out, SUM(u.estimated_cost_usd) cost "
-        "FROM session_model_usage u JOIN sessions s ON s.id = u.session_id "
-        "GROUP BY s.user_id ORDER BY cost DESC").fetchall()
-
-    out = []
+    agg = {}
     for r in rows:
-        sid = str(r["user_id"]) if r["user_id"] is not None else None
-        if sid_cutoff:
-            # filtrar sesiones del usuario por fecha de id
-            sess_ids = [x[0] for x in conn.execute(
-                "SELECT id FROM sessions WHERE user_id=?", (r["user_id"],))]
-            keep = [s for s in sess_ids if (_sid_date(s) or "") >= sid_cutoff]
-            if not keep:
-                continue
-            in_ = "(" + ",".join("?" for _ in keep) + ")"
-            u = conn.execute(
-                f"SELECT COUNT(DISTINCT session_id) ses, COALESCE(SUM(api_call_count),0) calls, "
-                f"COALESCE(SUM(input_tokens),0) inp, COALESCE(SUM(output_tokens),0) out, "
-                f"COALESCE(SUM(estimated_cost_usd),0) cost FROM session_model_usage "
-                f"WHERE session_id IN {in_}", keep).fetchone()
-            ses, calls, inp, outt, cost = u["ses"], u["calls"], u["inp"], u["out"], u["cost"]
-        else:
-            ses, calls, inp, outt, cost = r["ses"], r["calls"], r["inp"], r["out"], r["cost"]
-        label = names.get(sid, sid) if sid else "cron"
-        if sid is None:
-            label = "cron"
-        out.append({
-            "user": label or sid or "anon",
-            "chat_id": sid or "—",
-            "sessions": ses or 0,
-            "calls": calls or 0,
-            "tokens": (inp or 0) + (outt or 0),
-            "cost": round(cost or 0, 4),
+        uid = str(r["user_id"]) if r["user_id"] is not None else None
+        key = uid or "cron"
+        a = agg.setdefault(key, {
+            "user": names.get(uid, uid) if uid else "cron",
+            "chat_id": uid or "—",
+            "sessions": 0, "calls": 0, "tokens": 0, "cost": 0.0,
         })
+        a["sessions"] += r["ses"]
+        a["calls"] += r["calls"]
+        a["tokens"] += r["inp"] + r["out"]
+        rates = FALLBACK_RATES.get(r["model"])
+        if rates and not r["e"]:
+            a["cost"] += (r["inp"] * rates["input"] + r["out"] * rates["output"]
+                          + r["cr"] * rates["cache_read"]) / 1_000_000
+        else:
+            a["cost"] += r["e"] or 0
     conn.close()
-    return sorted(out, key=lambda x: x["cost"], reverse=True)[:12]
+    for a in agg.values():
+        a["cost"] = round(a["cost"], 4)
+    return sorted(agg.values(), key=lambda x: x["cost"], reverse=True)[:12]
 
 
 def errors_by_user(days=None):
@@ -202,11 +225,20 @@ def models():
     conn = _state_conn()
     rows = conn.execute(
         "SELECT model, COUNT(*) sessions, COALESCE(SUM(input_tokens),0) inp, "
-        "COALESCE(SUM(output_tokens),0) out, COALESCE(SUM(estimated_cost_usd),0) cost "
+        "COALESCE(SUM(output_tokens),0) out, COALESCE(SUM(cache_read_tokens),0) cr, "
+        "COALESCE(SUM(estimated_cost_usd),0) cost "
         "FROM session_model_usage GROUP BY model ORDER BY inp+out DESC").fetchall()
     conn.close()
-    return [{"model": r["model"], "sessions": r["sessions"], "tokens": r["inp"] + r["out"],
-             "cost": round(r["cost"], 4)} for r in rows]
+    out = []
+    for r in rows:
+        cost = r["cost"] or 0
+        rates = FALLBACK_RATES.get(r["model"])
+        if rates and not cost:
+            cost = (r["inp"] * rates["input"] + r["out"] * rates["output"]
+                    + r["cr"] * rates["cache_read"]) / 1_000_000
+        out.append({"model": r["model"], "sessions": r["sessions"],
+                    "tokens": r["inp"] + r["out"], "cost": round(cost, 4)})
+    return out
 
 
 def platforms():
